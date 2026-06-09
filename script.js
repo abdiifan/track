@@ -78,11 +78,55 @@ function resetPageFilters() {
 // ── RECONCILIATION STATE ───────────────────────────────────────────────────
 // Each entry: { sourceMaterial, sourceDesc, sourceUnit,
 //               conversionFactor,
-//               targetMaterial, targetDesc, targetUnit }
+//               targetMaterial, targetDesc, targetUnit,
+//               _builtin: true   ← marks rules that ship with the system }
 // Qty rule: targetQty = sourceQty × conversionFactor
 // Value rule: values are in ETB → summed as-is (no factor applied)
 // Expiry rule: earliest (soonest) expiry date is kept (safest for pharma)
 let reconcileGroups = [];
+
+// ── BUILT-IN DEFAULT RECONCILIATION RULES ─────────────────────────────────
+// These rules consolidate ASA pack-size variants into the canonical 20×10 pack
+// (102-ACET-0102-02) for QC inspection and branch comparison reporting.
+//
+//  Source                 Factor   Target              Rationale
+//  102-ACET-0102-01       × 0.5  → 102-ACET-0102-02   Microfined 10×10 → 20×10 equivalent
+//  102-ACET-0102-04       × 0.5  → 102-ACET-0102-02   Enteric Coated 10×10 → 20×10 equivalent
+//  102-ACET-0102-03       × 1.0  → 102-ACET-0102-02   Enteric Coated 200 → same qty basis
+//
+// The target code 102-ACET-0102-02 (ASA 81mg E.Coated 20×10) is the canonical form.
+const DEFAULT_RECONCILE_RULES = [
+  {
+    sourceMaterial:   "102-ACET-0102-01",
+    sourceDesc:       "Acetylsalicylic Acid - 81mg - Tablet (Microfined) of 10x10",
+    sourceUnit:       "PAC",
+    conversionFactor: 0.5,
+    targetMaterial:   "102-ACET-0102-02",
+    targetDesc:       "ASA - 81mg -Tablet (E. Coated) of 20x10",
+    targetUnit:       "PAC",
+    _builtin:         true,
+  },
+  {
+    sourceMaterial:   "102-ACET-0102-04",
+    sourceDesc:       "Acetylsalicylic Acid - 81mg - Tablet( Enteric Coated) of 10x10",
+    sourceUnit:       "PAC",
+    conversionFactor: 0.5,
+    targetMaterial:   "102-ACET-0102-02",
+    targetDesc:       "ASA - 81mg -Tablet (E. Coated) of 20x10",
+    targetUnit:       "PAC",
+    _builtin:         true,
+  },
+  {
+    sourceMaterial:   "102-ACET-0102-03",
+    sourceDesc:       "Acetylsalicylic Acid - 81mg - Tablet( Enteric Coated) of 200",
+    sourceUnit:       "PAC",
+    conversionFactor: 1,
+    targetMaterial:   "102-ACET-0102-02",
+    targetDesc:       "ASA - 81mg -Tablet (E. Coated) of 20x10",
+    targetUnit:       "PAC",
+    _builtin:         true,
+  },
+];
 
 // ── RECONCILIATION CACHE (PERF-1) ─────────────────────────────────────────
 // Cache the reconciled base so repeated page renders don't re-run the full
@@ -1113,12 +1157,22 @@ function renderQCSearch() {
   if (!query) { resultsEl.innerHTML = ""; return; }
   if (!rawDf.length) { resultsEl.innerHTML = `<div class="alert-info">No data loaded yet.</div>`; return; }
 
-  const baseDf = applyPageFilter("qc");
+  // Aggregate by material so source codes are consolidated into their target code
+  // before searching — ensures searching "102-ACET-0102-01" returns the consolidated row
+  const baseDf = aggregateByMaterial(
+    applyPageFilter("qc").filter(r => (r["Stock in Quality Inspection"] || 0) > 0)
+  );
+
+  // Also allow searching by any original source code (maps to target description)
+  const srcToTarget = {};
+  reconcileGroups.forEach(g => { srcToTarget[g.sourceMaterial.toLowerCase()] = g.targetMaterial; });
+
   const matches = baseDf.filter(r => {
     const code  = String(r["Material"] || "").toLowerCase();
     const desc  = String(r["Material Description"] || "").toLowerCase();
-    const hasQC = (r["Stock in Quality Inspection"] || 0) > 0;
-    return hasQC && (code.includes(query) || desc.includes(query));
+    // Also match if the query matches any source code that points to this target
+    const srcMatch = r._sourceBreakdown?.some(s => s.origCode.toLowerCase().includes(query));
+    return (code.includes(query) || desc.includes(query) || srcMatch);
   });
 
   if (!matches.length) {
@@ -1137,26 +1191,43 @@ function renderQCSearch() {
       else if (daysLeft <= 180) { statusLabel = `${daysLeft}d left`;                  statusClass = "row-amber"; }
       else                      { statusLabel = `${daysLeft}d left`;                  statusClass = "";          }
     }
-    return { ...r, _expiryStr: expiryStr, _daysLeft: daysLeft ?? 99999, _statusLabel: statusLabel, _statusClass: statusClass };
+
+    // Build "Reconciled From" cell
+    let reconSrcHtml = `<span style="color:var(--dim);font-size:0.68rem">—</span>`;
+    if (r._isReconciled && r._sourceBreakdown && r._sourceBreakdown.length > 1) {
+      reconSrcHtml = r._sourceBreakdown.map(s => {
+        const rawQty  = fmtQty(s.qcQty);
+        const convQty = fmtQty(s.convertedQCQty);
+        const isTarget = s.origCode === r["Material"];
+        if (isTarget) {
+          return `<span style="font-size:0.68rem;color:var(--green)">` +
+                 `<span class="col-mat-code" style="font-size:0.65rem">${escHtml(s.origCode)}</span> = ${convQty}</span>`;
+        }
+        return `<span style="font-size:0.68rem;color:var(--muted)">` +
+               `<span class="col-mat-code" style="font-size:0.65rem">${escHtml(s.origCode)}</span>` +
+               ` ${rawQty} ×${s.convFactor} → <b style="color:var(--text)">${convQty}</b></span>`;
+      }).join(`<span style="color:var(--dim);margin:0 2px">+</span>`);
+      reconSrcHtml = `<div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center">${reconSrcHtml}</div>`;
+    }
+
+    return { ...r, _expiryStr: expiryStr, _daysLeft: daysLeft ?? 99999, _statusLabel: statusLabel, _statusClass: statusClass, _reconSrcCol: reconSrcHtml };
   });
 
   const sorted     = annotated.sort((a,b) => a._daysLeft - b._daysLeft);
   const uniqueMats = [...new Set(sorted.map(r => r["Material"]))];
   const summary    = `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.5rem">
-    Found <b style="color:var(--text)">${sorted.length}</b> QC record(s) across
-    <b style="color:var(--text)">${uniqueMats.length}</b> material code(s)
+    Found <b style="color:var(--text)">${sorted.length}</b> QC material(s)
+    (consolidated to <b style="color:var(--text)">${uniqueMats.length}</b> canonical code(s))
   </div>`;
 
   const cols = [
     {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
     {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
-    {key:"Plant Name",                           label:"Plant"},
-    {key:"Description of Storage Location",      label:"Storage Location"},
-    {key:"Batch",                                label:"Batch"},
-    {key:"_expiryStr",                           label:"Shelf Life Expiry"},
-    {key:"_statusLabel",                         label:"Expiry Status"},
-    {key:"Stock in Quality Inspection",          label:"QC Qty",       fmt:fmtQty, rawKey:"Stock in Quality Inspection",          cellClass:"col-qty"},
-    {key:"Value of Stock in Quality Inspection", label:"QC Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Quality Inspection", cellClass:"col-val"},
+    {key:"_reconSrcCol",                          label:"Reconciled From", raw:true},
+    {key:"_expiryStr",                            label:"Shelf Life Expiry"},
+    {key:"_statusLabel",                          label:"Expiry Status"},
+    {key:"Stock in Quality Inspection",           label:"QC Qty (Consolidated)", fmt:(val,r)=>`${fmtQty(val)}${renderReconBadge(r,"qc")}`, raw:true, rawKey:"Stock in Quality Inspection", cellClass:"col-qty"},
+    {key:"Value of Stock in Quality Inspection",  label:"QC Value (ETB)", fmt:fmtETB, rawKey:"Value of Stock in Quality Inspection", cellClass:"col-val"},
   ];
   resultsEl.innerHTML = summary + buildTable(sorted, cols, r => r._statusClass);
 }
@@ -1217,7 +1288,10 @@ function renderQC() {
   // FIX BUG-6: removed "&& r["Value of Stock in Quality Inspection"] > 0"
   // SAP sometimes records QC qty > 0 with zero ETB value (non-valuated batches,
   // consignment stock) — these must still appear for physical count audits.
-  const df = applyPageFilter("qc").filter(r => r["Stock in Quality Inspection"] > 0);
+  // RECONCILIATION: aggregate all source codes into their target canonical code
+  // so each material appears exactly once (e.g. three ASA variants → one total).
+  const rawFiltered = applyPageFilter("qc").filter(r => r["Stock in Quality Inspection"] > 0);
+  const df          = aggregateByMaterial(rawFiltered).filter(r => r["Stock in Quality Inspection"] > 0);
 
   const totalQCVal = df.reduce((s,r) => s + r["Value of Stock in Quality Inspection"], 0);
   const totalQCQty = df.reduce((s,r) => s + r["Stock in Quality Inspection"], 0);
@@ -1229,7 +1303,7 @@ function renderQC() {
 
   if (!df.length) { document.getElementById("qc-table-wrap").innerHTML = `<div class="alert-info">✓ No items in quality inspection.</div>`; return; }
 
-  const plantQC = sortBy(groupBy(df, "Plant Name", [["val","Value of Stock in Quality Inspection"],["qty","Stock in Quality Inspection"]]), "val");
+  const plantQC = sortBy(groupBy(rawFiltered, "Plant Name", [["val","Value of Stock in Quality Inspection"],["qty","Stock in Quality Inspection"]]), "val");
   Plotly.newPlot("chart-qc-plant", [
     {type:"bar",     name:"Value (ETB)", x:plantQC.map(r=>r["Plant Name"]), y:plantQC.map(r=>r.val), yaxis:"y",  marker:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>"},
     {type:"scatter", mode:"lines+markers", name:"Qty", x:plantQC.map(r=>r["Plant Name"]), y:plantQC.map(r=>r.qty), yaxis:"y2", marker:{color:"#3fb950",size:8}, line:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>Qty: %{y:,.0f}<extra></extra>"},
@@ -1239,14 +1313,39 @@ function renderQC() {
     {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
     {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Material Group Name",                  label:"Material Group"},
-    {key:"Plant Name",                           label:"Plant"},
-    {key:"Description of Storage Location",      label:"Storage Location"},
+    {key:"_reconSrcCol",                         label:"Reconciled From", raw:true},
     {key:"_expiryStr",                           label:"Shelf Life Expiry"},
-    {key:"Stock in Quality Inspection",          label:"QC Qty",        fmt:fmtQty, rawKey:"Stock in Quality Inspection",          cellClass:"col-qty"},
+    {key:"Stock in Quality Inspection",          label:"QC Qty",        fmt:(val,r)=>`${fmtQty(val)}${renderReconBadge(r,"qc")}`, raw:true, rawKey:"Stock in Quality Inspection", cellClass:"col-qty"},
     {key:"Value of Stock in Quality Inspection", label:"QC Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Quality Inspection", cellClass:"col-val"},
   ];
+
   const qcRows = sortBy(
-    [...df].map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""})),
+    [...df].map(r => {
+      let reconSrcHtml = "";
+      if (r._isReconciled && r._sourceBreakdown && r._sourceBreakdown.length > 1) {
+        reconSrcHtml = r._sourceBreakdown.map(s => {
+          const rawQty  = fmtQty(s.qcQty);
+          const convQty = fmtQty(s.convertedQCQty);
+          const isTarget = s.origCode === r["Material"];
+          if (isTarget) {
+            return `<span style="font-size:0.7rem;color:var(--green)">` +
+                   `<span class="col-mat-code" style="font-size:0.65rem">${escHtml(s.origCode)}</span>` +
+                   ` = ${convQty}</span>`;
+          }
+          return `<span style="font-size:0.7rem;color:var(--muted)">` +
+                 `<span class="col-mat-code" style="font-size:0.65rem">${escHtml(s.origCode)}</span>` +
+                 ` ${rawQty} ×${s.convFactor} → <b style="color:var(--text)">${convQty}</b></span>`;
+        }).join(`<span style="color:var(--muted);margin:0 2px">+</span>`);
+        reconSrcHtml = `<div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;font-size:0.68rem">${reconSrcHtml}</div>`;
+      } else {
+        reconSrcHtml = `<span style="color:var(--dim);font-size:0.68rem">—</span>`;
+      }
+      return {
+        ...r,
+        _expiryStr:   r._expiry ? r._expiry.toISOString().slice(0,10) : "",
+        _reconSrcCol: reconSrcHtml,
+      };
+    }),
     "Value of Stock in Quality Inspection"
   );
   document.getElementById("qc-table-wrap").innerHTML = buildTable(qcRows, qcCols, r => r["Value of Stock in Quality Inspection"] > 10000 ? "row-red" : "");
@@ -1259,7 +1358,9 @@ function renderQC() {
 // ═══════════════════════════════════════════════════════════════════════════
 function renderBranch() {
   const baseDf = applyPageFilter("branch");
-  const df     = baseDf;
+  // Aggregate by material so source codes consolidate into canonical target codes
+  // across all plants before the branch-level breakdown is built.
+  const df = aggregateByMaterial(baseDf);
 
   const plants = [...new Set(df.map(r => String(r["Plant"]).toUpperCase()))];
   let centralCode, centralName;
@@ -1294,7 +1395,19 @@ function renderBranch() {
   const matPlantMap = {};
   df.forEach(r => {
     const mat = r["Material"], pln = r["Plant Name"];
-    if (!matPlantMap[mat]) matPlantMap[mat] = {desc:r["Material Description"],group:r["Material Group Name"]};
+    if (!matPlantMap[mat]) {
+      matPlantMap[mat] = {
+        desc:             r["Material Description"],
+        group:            r["Material Group Name"],
+        _isReconciled:    r._isReconciled    || false,
+        _sourceBreakdown: r._sourceBreakdown || [],
+      };
+    }
+    // Propagate reconciliation metadata from any row that carries it
+    if (r._isReconciled && !matPlantMap[mat]._isReconciled) {
+      matPlantMap[mat]._isReconciled    = true;
+      matPlantMap[mat]._sourceBreakdown = r._sourceBreakdown || [];
+    }
     if (!matPlantMap[mat][pln]) matPlantMap[mat][pln] = {Unrestricted:0,Transit:0,QC:0,TotalValue:0,TotalQty:0,UnrestrictedQty:0,TransitQty:0,QCQty:0};
     matPlantMap[mat][pln].Unrestricted    += r["Value of Unrestricted Stock"];
     matPlantMap[mat][pln].Transit         += r["Value of Stock in Transit"];
@@ -1426,7 +1539,11 @@ function renderBranch() {
       let materials = Object.entries(matPlantMap)
         .filter(([mat, info]) => {
           if (mgFilter && info.group !== mgFilter) return false;
-          if (searchVal) return mat.toLowerCase().includes(searchVal) || info.desc.toLowerCase().includes(searchVal);
+          if (searchVal) {
+            // Also match by any original source code that maps to this target
+            const srcMatch = info._sourceBreakdown?.some(s => s.origCode.toLowerCase().includes(searchVal));
+            return mat.toLowerCase().includes(searchVal) || info.desc.toLowerCase().includes(searchVal) || !!srcMatch;
+          }
           return true;
         })
         .map(([mat, info]) => {
@@ -1438,7 +1555,8 @@ function renderBranch() {
             grandTotal   += plantData[pn];
             if ((info[pn]?.TotalValue || 0) > 0) branchCount++;
           });
-          return {mat, desc:info.desc, group:info.group, plantData, grandTotal, branchCount};
+          return {mat, desc:info.desc, group:info.group, plantData, grandTotal, branchCount,
+                  _isReconciled: info._isReconciled, _sourceBreakdown: info._sourceBreakdown};
         });
 
       if (sortMode === "total_desc") materials.sort((a,b) => b.grandTotal - a.grandTotal);
@@ -1456,9 +1574,10 @@ function renderBranch() {
       chartWrap.innerHTML = "";
 
       const colDefs = [
-        {key:"mat", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
+        {key:"mat",  label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
         {key:"desc", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
-        {key:"group", label:"Material Group"},
+        {key:"group",label:"Material Group"},
+        {key:"_reconCol", label:"Reconciled From", raw:true},
         ...allPlantNames.map(pn => ({key:`__p__${pn}`, label:pn, fmt:fmtFn, rawKey:`__r__${pn}`, cellClass:isQty?"col-qty":"col-val"})),
         {key:"grandTotal",  label:"Grand Total", fmt:fmtFn, rawKey:"grandTotal", cellClass:isQty?"col-qty":"col-val"},
         {key:"branchCount", label:"# Branches"},
@@ -1467,6 +1586,24 @@ function renderBranch() {
         const row = {mat:m.mat, desc:m.desc, group:m.group, grandTotal:m.grandTotal, branchCount:m.branchCount};
         allPlantNames.forEach(pn => { row[`__p__${pn}`] = m.plantData[pn] || 0; row[`__r__${pn}`] = m.plantData[pn] || 0; });
         row["__r__grandTotal"] = m.grandTotal;
+
+        // Build reconciliation summary for this material
+        if (m._isReconciled && m._sourceBreakdown && m._sourceBreakdown.length > 1) {
+          const qtyKey  = isQty ? (metric === "QCQty" ? "convertedQCQty" : metric === "TransitQty" ? "convertedTransitQty" : "convertedUnrestQty") : null;
+          const rawKey  = isQty ? (metric === "QCQty" ? "qcQty"          : metric === "TransitQty" ? "transitQty"          : "unrestQty")          : null;
+          row._reconCol = m._sourceBreakdown.map(s => {
+            const isTarget = s.origCode === m.mat;
+            if (isTarget) {
+              return `<span style="font-size:0.65rem;color:var(--green)"><span class="col-mat-code" style="font-size:0.6rem">${escHtml(s.origCode)}</span>${isQty && qtyKey ? ` = ${fmtQty(s[qtyKey])}` : ""}</span>`;
+            }
+            const rawQty  = isQty && rawKey  ? ` ${fmtQty(s[rawKey])}`       : "";
+            const convQty = isQty && qtyKey  ? ` → <b style="color:var(--text)">${fmtQty(s[qtyKey])}</b>` : "";
+            return `<span style="font-size:0.65rem;color:var(--muted)"><span class="col-mat-code" style="font-size:0.6rem">${escHtml(s.origCode)}</span>${rawQty} ×${s.convFactor}${convQty}</span>`;
+          }).join(`<span style="color:var(--dim);margin:0 1px">+</span>`);
+          row._reconCol = `<div style="display:flex;flex-wrap:wrap;gap:2px;align-items:center">${row._reconCol}</div>`;
+        } else {
+          row._reconCol = `<span style="color:var(--dim);font-size:0.65rem">—</span>`;
+        }
         return row;
       });
 
@@ -1477,7 +1614,10 @@ function renderBranch() {
       const tbody = tableRows.map(r => {
         const cells = colDefs.map(c => {
           const v       = r[c.key];
-          const display = c.fmt ? c.fmt(v) : (v == null ? "" : escHtml(String(v)));
+          const raw     = c.raw ? v : null;           // raw HTML — don't escape
+          const display = raw != null ? (raw ?? "")
+                        : c.fmt ? c.fmt(v)
+                        : (v == null ? "" : escHtml(String(v)));
           const isZero  = typeof v === "number" && v === 0;
           const style   = c.key === centralKey ? 'style="color:#58a6ff;background:#0d2035"' : isZero ? 'style="color:#484f58"' : "";
           const cls     = c.cellClass || "";
@@ -1801,6 +1941,177 @@ function applyReconciliationToData(df) {
   return merged;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// AGGREGATE BY MATERIAL (used by QC and Branch Comparison)
+// ═══════════════════════════════════════════════════════════════════════════
+// After reconciliation renames source codes → target codes, rows that share
+// the same target material code but differ in Plant / Storage Location / Batch
+// still appear as separate rows.  This function collapses them into ONE row
+// per material code, summing all qty and value columns and keeping the
+// earliest expiry.  It also attaches a human-readable "_reconSummary" string
+// that lists every original source contribution for audit purposes.
+//
+// Example:
+//   102-ACET-0102-01 (QC=10 × 0.5) → 102-ACET-0102-02 (QC=5)
+//   102-ACET-0102-04 (QC=20 × 0.5) → 102-ACET-0102-02 (QC=10)
+//   102-ACET-0102-03 (QC=10 × 1.0) → 102-ACET-0102-02 (QC=10)
+//   Already in data: 102-ACET-0102-02 (QC=90)
+//   ──────────────────────────────────────────────────────
+//   Consolidated:    102-ACET-0102-02 (QC=115)
+//
+// The "_sourceBreakdown" array carries per-source-code objects for tooltip/table use.
+// The "_isReconciled" flag is true when at least two different original codes merged.
+
+function aggregateByMaterial(df) {
+  const QTY_COLS = [
+    "Unrestricted Stock", "Stock in Quality Inspection",
+    "Blocked Stock",      "Stock in Transit",
+    "Total Qty",
+  ];
+  const VAL_COLS = [
+    "Value of Unrestricted Stock", "Value of Stock in Quality Inspection",
+    "Value of Stock in Transit",   "Value of Stock in Quality Inspection",
+    "Total Value",
+  ];
+
+  // Build a lookup: original source → target + factor from reconcileGroups
+  const srcToRule = {};
+  reconcileGroups.forEach(g => { srcToRule[g.sourceMaterial] = g; });
+
+  // We need to know what original (pre-reconciliation) material each row came from.
+  // applyReconciliationToData renames Material to the target code but does NOT
+  // preserve the original code.  However, we can look it up via _originalMaterial
+  // if present (we will start stamping it below), or infer it from reconcileGroups.
+
+  // First pass: re-apply raw source → row mapping to attach _originalMaterial
+  // We do this by re-scanning rawDf and reconcileGroups together.
+  const targetToSources = {}; // targetCode → Set of source codes
+  reconcileGroups.forEach(g => {
+    if (!targetToSources[g.targetMaterial]) targetToSources[g.targetMaterial] = new Set();
+    targetToSources[g.targetMaterial].add(g.sourceMaterial);
+  });
+
+  // Group all rows by Material code
+  const matMap = {}; // materialCode → aggregated row
+
+  df.forEach(row => {
+    const mat = row["Material"];
+    if (!mat) return;
+
+    if (!matMap[mat]) {
+      // First row for this material — use it as the base
+      matMap[mat] = {
+        ...row,
+        _sourceBreakdown: [],   // [{origCode, convFactor, qcQty, unrestQty, transitQty}]
+        _isReconciled:    false,
+      };
+    } else {
+      // Subsequent row for same material code — aggregate
+      const target = matMap[mat];
+      QTY_COLS.forEach(c => { target[c] = (target[c] || 0) + (row[c] || 0); });
+      // De-duplicate VAL_COLS (Total Value included twice above for safety — fix)
+      [
+        "Value of Unrestricted Stock",
+        "Value of Stock in Quality Inspection",
+        "Value of Stock in Transit",
+        "Total Value",
+      ].forEach(c => { target[c] = (target[c] || 0) + (row[c] || 0); });
+      _mergeExpiry(target, row);
+      // Merge non-blank string fields for display
+      if (!target["Plant Name"] && row["Plant Name"]) target["Plant Name"] = row["Plant Name"];
+      if (!target["Material Group Name"] && row["Material Group Name"]) target["Material Group Name"] = row["Material Group Name"];
+      target._isReconciled = true;
+    }
+  });
+
+  // Third pass: for each target material that has reconcile rules pointing to it,
+  // build the breakdown summary from rawDf (pre-conversion) for audit display.
+  const rawByMat = {};
+  rawDf.forEach(r => {
+    const c = r["Material"];
+    if (!rawByMat[c]) rawByMat[c] = [];
+    rawByMat[c].push(r);
+  });
+
+  Object.keys(matMap).forEach(tgtCode => {
+    const row    = matMap[tgtCode];
+    const srcSet = targetToSources[tgtCode]; // source codes that map → tgtCode
+    if (!srcSet || !srcSet.size) return;
+
+    const breakdown = [];
+
+    // Include the target code itself if it exists in raw data
+    const selfRaws = rawByMat[tgtCode] || [];
+    if (selfRaws.length) {
+      const selfQCQty  = selfRaws.reduce((s,r) => s + (r["Stock in Quality Inspection"] || 0), 0);
+      const selfUnrQty = selfRaws.reduce((s,r) => s + (r["Unrestricted Stock"] || 0), 0);
+      const selfTrQty  = selfRaws.reduce((s,r) => s + (r["Stock in Transit"]   || 0), 0);
+      if (selfQCQty + selfUnrQty + selfTrQty > 0) {
+        breakdown.push({
+          origCode: tgtCode, convFactor: 1,
+          qcQty: selfQCQty, unrestQty: selfUnrQty, transitQty: selfTrQty,
+          convertedQCQty: selfQCQty, convertedUnrestQty: selfUnrQty, convertedTransitQty: selfTrQty,
+        });
+      }
+    }
+
+    // Include each source code
+    srcSet.forEach(srcCode => {
+      const rule    = srcToRule[srcCode];
+      const srcRaws = rawByMat[srcCode] || [];
+      if (!srcRaws.length || !rule) return;
+      const rawQCQty  = srcRaws.reduce((s,r) => s + (r["Stock in Quality Inspection"] || 0), 0);
+      const rawUnrQty = srcRaws.reduce((s,r) => s + (r["Unrestricted Stock"] || 0), 0);
+      const rawTrQty  = srcRaws.reduce((s,r) => s + (r["Stock in Transit"]   || 0), 0);
+      if (rawQCQty + rawUnrQty + rawTrQty === 0) return;
+      breakdown.push({
+        origCode: srcCode, convFactor: rule.conversionFactor,
+        qcQty:      rawQCQty,
+        unrestQty:  rawUnrQty,
+        transitQty: rawTrQty,
+        convertedQCQty:      Math.round(rawQCQty  * rule.conversionFactor * 1e9) / 1e9,
+        convertedUnrestQty:  Math.round(rawUnrQty * rule.conversionFactor * 1e9) / 1e9,
+        convertedTransitQty: Math.round(rawTrQty  * rule.conversionFactor * 1e9) / 1e9,
+      });
+    });
+
+    if (breakdown.length > 1) {
+      row._sourceBreakdown = breakdown;
+      row._isReconciled    = true;
+    }
+  });
+
+  return Object.values(matMap);
+}
+
+// Render a compact reconciliation tooltip/badge showing how a consolidated
+// material was built from its sources.  Used in QC and Branch tables.
+function renderReconBadge(row, qtyField) {
+  if (!row._isReconciled || !row._sourceBreakdown || !row._sourceBreakdown.length) return "";
+
+  const qtyKey = qtyField === "qc"       ? "qcQty"
+               : qtyField === "unrest"   ? "unrestQty"
+               : qtyField === "transit"  ? "transitQty"
+               : "qcQty"; // default
+
+  const convKey = qtyField === "qc"      ? "convertedQCQty"
+                : qtyField === "unrest"  ? "convertedUnrestQty"
+                : qtyField === "transit" ? "convertedTransitQty"
+                : "convertedQCQty";
+
+  const lines = row._sourceBreakdown.map(s => {
+    const rawQty   = fmtQty(s[qtyKey]);
+    const convQty  = fmtQty(s[convKey]);
+    const factor   = s.convFactor === 1 ? "×1.0" : `×${s.convFactor}`;
+    const arrow    = s.convFactor === 1 && s.origCode === row["Material"] ? "" : ` ${factor} → ${convQty}`;
+    return `${escHtml(s.origCode)}: ${rawQty}${arrow}`;
+  }).join("&#10;"); // newline in tooltip
+
+  const total = fmtQty(row._sourceBreakdown.reduce((s,b) => s + (b[convKey] || 0), 0));
+
+  return `<span class="recon-badge" title="Consolidated from ${row._sourceBreakdown.length} source(s):&#10;${lines}&#10;Total = ${total}" style="cursor:help;margin-left:4px;font-size:0.6rem;background:#1f3558;color:#58a6ff;border:1px solid #1f6feb;border-radius:3px;padding:1px 4px;vertical-align:middle;white-space:nowrap">⟳ ${row._sourceBreakdown.length} src</span>`;
+}
+
 // Keep earliest (soonest) expiry — safest approach for pharma stock management.
 function _mergeExpiry(target, src) {
   const te = target["_expiry"], se = src["_expiry"];
@@ -2008,13 +2319,22 @@ function refreshReconcileGroupsList() {
     el.innerHTML = `<div style="color:var(--muted);font-size:0.75rem;padding:0.5rem 0">No conversions defined yet.</div>`;
     return;
   }
-  el.innerHTML = reconcileGroups.map((g, i) => `
-    <div class="rp-group-card" style="margin-bottom:0.6rem">
+  el.innerHTML = reconcileGroups.map((g, i) => {
+    const isBuiltin = !!g._builtin;
+    const builtinBadge = isBuiltin
+      ? `<span style="font-size:0.6rem;background:#0d2035;color:#58a6ff;border:1px solid #58a6ff;border-radius:4px;padding:1px 5px;vertical-align:middle;margin-left:4px">BUILT-IN</span>`
+      : "";
+    const deleteBtn = isBuiltin
+      ? `<span style="font-size:0.68rem;color:var(--muted);padding:2px 8px;margin-top:2px;cursor:default" title="Built-in rules cannot be deleted">🔒</span>`
+      : `<button class="rp-group-del" data-group-idx="${i}" style="flex-shrink:0;font-size:0.68rem;padding:2px 8px;margin-top:2px">Delete</button>`;
+    return `
+    <div class="rp-group-card" style="margin-bottom:0.6rem${isBuiltin ? ";border-color:#1f3558;background:#0a1929" : ""}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:0.5rem">
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;margin-bottom:4px">
             <span class="rp-code-tag">${escHtml(g.sourceMaterial)}</span>
             <span style="color:var(--muted);font-size:0.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(g.sourceDesc || "")}</span>
+            ${builtinBadge}
           </div>
           <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:4px">
             <span style="color:var(--amber);font-size:0.85rem">⟶</span>
@@ -2026,9 +2346,10 @@ function refreshReconcileGroupsList() {
             <span style="color:var(--muted)">&nbsp;qty × factor → target qty &nbsp;|&nbsp; value summed as-is</span>
           </div>
         </div>
-        <button class="rp-group-del" data-group-idx="${i}" style="flex-shrink:0;font-size:0.68rem;padding:2px 8px;margin-top:2px">Delete</button>
+        ${deleteBtn}
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 
   // Use a single delegated listener on the stable container element
   // (el is replaced each call so no listener accumulation)
@@ -2037,6 +2358,11 @@ function refreshReconcileGroupsList() {
     if (!btn) return;
     const idx = parseInt(btn.dataset.groupIdx);
     if (!isNaN(idx)) {
+      // Never allow deletion of built-in rules
+      if (reconcileGroups[idx]?._builtin) {
+        alert("Built-in conversion rules cannot be deleted. They are required for ASA pack-size reconciliation.");
+        return;
+      }
       reconcileGroups.splice(idx, 1);
       invalidateReconCache();
       saveReconcileGroups();
@@ -2068,19 +2394,34 @@ function isValidReconcileGroup(g) {
 function loadReconcileGroups() {
   try {
     const saved = localStorage.getItem(RECONCILE_STORE_KEY);
-    if (!saved) return;
-    const parsed = JSON.parse(saved);
-    if (!Array.isArray(parsed)) { reconcileGroups = []; return; }
-    const valid = parsed.filter(isValidReconcileGroup);
-    if (valid.length !== parsed.length) {
-      console.warn(`PharmaTrack: ${parsed.length - valid.length} invalid reconcile rule(s) discarded on load.`);
+    let userRules = [];
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        const valid = parsed.filter(isValidReconcileGroup);
+        if (valid.length !== parsed.length) {
+          console.warn(`PharmaTrack: ${parsed.length - valid.length} invalid reconcile rule(s) discarded on load.`);
+        }
+        // Strip any previously-persisted built-in rules so we always
+        // use the fresh DEFAULT_RECONCILE_RULES definition.
+        userRules = valid.filter(g => !g._builtin);
+      }
     }
-    reconcileGroups = valid;
+
+    // Merge: built-in rules first, then user-defined rules.
+    // Skip any user rule whose sourceMaterial would conflict with a default.
+    const builtinSources = new Set(DEFAULT_RECONCILE_RULES.map(g => g.sourceMaterial));
+    const filteredUser   = userRules.filter(g => !builtinSources.has(g.sourceMaterial));
+    reconcileGroups = [...DEFAULT_RECONCILE_RULES, ...filteredUser];
+
   } catch(e) {
     console.error("PharmaTrack: failed to load reconcile groups from localStorage:", e);
-    reconcileGroups = [];
+    reconcileGroups = [...DEFAULT_RECONCILE_RULES];
   }
 }
+
+// Re-persist after loading so built-in rules are always in the saved state.
+// (Called once at startup, after loadReconcileGroups runs.)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HOME PAGE
@@ -2178,8 +2519,10 @@ function renderPage(id) {
 // EVENT LISTENERS
 // ═══════════════════════════════════════════════════════════════════════════
 document.addEventListener("DOMContentLoaded", () => {
-  // Load persisted reconcile groups before anything else
+  // Load persisted reconcile groups (always merges DEFAULT_RECONCILE_RULES)
   loadReconcileGroups();
+  // Immediately re-persist so the merged state (including built-ins) is saved
+  saveReconcileGroups();
 
   // Show Home page immediately (works without data)
   renderPage("home");
@@ -2337,9 +2680,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Clear all reconciliation rules
   document.getElementById("rp-clear-all").addEventListener("click", () => {
-    if (!reconcileGroups.length) return;
-    if (confirm(`Delete all ${reconcileGroups.length} conversion(s)?`)) {
-      reconcileGroups.length = 0;
+    const userRules = reconcileGroups.filter(g => !g._builtin);
+    if (!userRules.length) {
+      alert("No user-defined conversions to clear. Built-in rules are always retained.");
+      return;
+    }
+    if (confirm(`Delete all ${userRules.length} user-defined conversion(s)? Built-in rules will be kept.`)) {
+      // Keep only built-in rules
+      reconcileGroups = reconcileGroups.filter(g => g._builtin);
       invalidateReconCache();
       saveReconcileGroups();
       refreshReconcileGroupsList();
