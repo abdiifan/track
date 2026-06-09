@@ -2184,6 +2184,11 @@ function handleReconcileFileUpload(file) {
 
         if (!srcMat || !tgtMat || isNaN(factor) || factor <= 0) { skipped++; continue; }
 
+        // Skip self-mapping rows (source === target) — these are canonical identity
+        // rows in the mapping file and must NOT be registered as conversion rules
+        // or they block real conversion rules from being added.
+        if (srcMat === tgtMat) { skipped++; continue; }
+
         // FIX BUG-2 + BUG-5: validate via shared rule validator
         const ruleErrors = validateNewConversionRule(srcMat, tgtMat);
         if (ruleErrors.length) { skipped++; errors.push(`Row ${i+1}: ${ruleErrors[0]}`); continue; }
