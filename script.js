@@ -2176,11 +2176,11 @@ function handleReconcileFileUpload(file) {
         const r       = rows[i];
         const srcMat  = String(r[0] || "").trim();
         const srcDesc = String(r[1] || "").trim();
-        const srcUnit = String(r[2] || "").trim();
-        const factor  = parseFloat(r[3]);
-        const tgtMat  = String(r[4] || "").trim();
-        const tgtDesc = String(r[5] || "").trim();
-        const tgtUnit = String(r[6] || "").trim();
+        const factor  = parseFloat(r[2]);
+        const tgtMat  = String(r[3] || "").trim();
+        const tgtDesc = String(r[4] || "").trim();
+        const srcUnit = "";
+        const tgtUnit = "";
 
         if (!srcMat || !tgtMat || isNaN(factor) || factor <= 0) { skipped++; continue; }
 
