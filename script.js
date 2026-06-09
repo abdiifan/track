@@ -2256,52 +2256,60 @@ document.addEventListener("DOMContentLoaded", () => {
     renderPreviewTable();
   });
 
-  // ── Page filter wiring ──
-  // FIX BUG: wirePageFilters now reads from multi-select wraps (_getSelected/_clearSelected)
-  // and writes to .plants[]/.mgs[] arrays that applyPageFilter uses.
-  // The old version wrote to scalar .plant/.mg which no longer exist on pageFilters.
-  function wirePageFilters(page, plantWrapId, mgWrapId, applyId, clearId) {
-    const applyBtn = document.getElementById(applyId);
-    const clearBtn = document.getElementById(clearId);
-    if (applyBtn) applyBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (!rawDf.length) return;
-      // Close any open dropdowns before reading — prevents race with global close handler
-      document.querySelectorAll(".ms-wrap.open").forEach(w => w.classList.remove("open"));
-      if (plantWrapId) {
-        const wrap = document.getElementById(plantWrapId);
-        pageFilters[page].plants = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
-      }
-      if (mgWrapId) {
-        const wrap = document.getElementById(mgWrapId);
-        pageFilters[page].mgs = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
-      }
-      renderPage(page);
-    });
-    if (clearBtn) clearBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (!rawDf.length) return;
-      document.querySelectorAll(".ms-wrap.open").forEach(w => w.classList.remove("open"));
-      if (plantWrapId) {
-        pageFilters[page].plants = [];
-        const wrap = document.getElementById(plantWrapId);
-        if (wrap && wrap._clearSelected) wrap._clearSelected();
-      }
-      if (mgWrapId) {
-        pageFilters[page].mgs = [];
-        const wrap = document.getElementById(mgWrapId);
-        if (wrap && wrap._clearSelected) wrap._clearSelected();
-      }
-      renderPage(page);
-    });
-  }
+  // ── Page filter wiring (event delegation) ──────────────────────────────
+  // Uses document-level delegation so listeners survive any DOM rebuild
+  // (e.g. the renderPage error path replaces pg.innerHTML entirely).
+  // Each Apply/Clear button is identified by its stable ID.
 
-  wirePageFilters("dashboard","ms-dash-plant",    "ms-dash-mg",    "dash-filter-apply",   "dash-filter-clear");
-  wirePageFilters("transit",  "ms-transit-plant", "ms-transit-mg", "transit-filter-apply","transit-filter-clear");
-  wirePageFilters("expiry",   "ms-expiry-plant",  "ms-expiry-mg",  "expiry-filter-apply", "expiry-filter-clear");
-  wirePageFilters("qc",       "ms-qc-plant",      "ms-qc-mg",      "qc-filter-apply",     "qc-filter-clear");
-  wirePageFilters("branch",   null,               "ms-branch-mg",  "branch-filter-apply", "branch-filter-clear");
-  wirePageFilters("flow",     "ms-flow-plant",    "ms-flow-mg",    "flow-filter-apply",   "flow-filter-clear");
+  const PAGE_FILTER_MAP = {
+    "dash-filter-apply":    { page:"dashboard", plantWrap:"ms-dash-plant",    mgWrap:"ms-dash-mg",    action:"apply" },
+    "dash-filter-clear":    { page:"dashboard", plantWrap:"ms-dash-plant",    mgWrap:"ms-dash-mg",    action:"clear" },
+    "transit-filter-apply": { page:"transit",   plantWrap:"ms-transit-plant", mgWrap:"ms-transit-mg", action:"apply" },
+    "transit-filter-clear": { page:"transit",   plantWrap:"ms-transit-plant", mgWrap:"ms-transit-mg", action:"clear" },
+    "expiry-filter-apply":  { page:"expiry",    plantWrap:"ms-expiry-plant",  mgWrap:"ms-expiry-mg",  action:"apply" },
+    "expiry-filter-clear":  { page:"expiry",    plantWrap:"ms-expiry-plant",  mgWrap:"ms-expiry-mg",  action:"clear" },
+    "qc-filter-apply":      { page:"qc",        plantWrap:"ms-qc-plant",      mgWrap:"ms-qc-mg",      action:"apply" },
+    "qc-filter-clear":      { page:"qc",        plantWrap:"ms-qc-plant",      mgWrap:"ms-qc-mg",      action:"clear" },
+    "branch-filter-apply":  { page:"branch",    plantWrap:null,               mgWrap:"ms-branch-mg",  action:"apply" },
+    "branch-filter-clear":  { page:"branch",    plantWrap:null,               mgWrap:"ms-branch-mg",  action:"clear" },
+    "flow-filter-apply":    { page:"flow",      plantWrap:"ms-flow-plant",    mgWrap:"ms-flow-mg",    action:"apply" },
+    "flow-filter-clear":    { page:"flow",      plantWrap:"ms-flow-plant",    mgWrap:"ms-flow-mg",    action:"clear" },
+  };
+
+  document.body.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[id]");
+    if (!btn) return;
+    const cfg = PAGE_FILTER_MAP[btn.id];
+    if (!cfg) return;
+    if (!rawDf.length) return;
+
+    e.stopPropagation();
+    // Close any open dropdowns first
+    document.querySelectorAll(".ms-wrap.open").forEach(w => w.classList.remove("open"));
+
+    if (cfg.action === "apply") {
+      if (cfg.plantWrap) {
+        const wrap = document.getElementById(cfg.plantWrap);
+        pageFilters[cfg.page].plants = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
+      }
+      if (cfg.mgWrap) {
+        const wrap = document.getElementById(cfg.mgWrap);
+        pageFilters[cfg.page].mgs = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
+      }
+    } else {
+      if (cfg.plantWrap) {
+        pageFilters[cfg.page].plants = [];
+        const wrap = document.getElementById(cfg.plantWrap);
+        if (wrap && wrap._clearSelected) wrap._clearSelected();
+      }
+      if (cfg.mgWrap) {
+        pageFilters[cfg.page].mgs = [];
+        const wrap = document.getElementById(cfg.mgWrap);
+        if (wrap && wrap._clearSelected) wrap._clearSelected();
+      }
+    }
+    renderPage(cfg.page);
+  });
 
   // ── Reconciliation panel ──
   document.getElementById("open-reconcile-btn").addEventListener("click", openReconcilePanel);
