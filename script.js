@@ -713,6 +713,8 @@ function renderStockTransitSection() {
   const noFileEl  = document.getElementById("stock-transit-no-file");
   const contentEl = document.getElementById("stock-transit-content");
 
+  if (!noFileEl || !contentEl) return; // elements not in DOM yet
+
   if (!stockTransitRaw.length) {
     noFileEl.style.display  = "block";
     contentEl.style.display = "none";
