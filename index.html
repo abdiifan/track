@@ -300,6 +300,31 @@
     <div class="chart-box full"><div class="section-header">Transit Quantity &amp; Value by Plant</div><div id="chart-transit-plant"></div></div>
     <div class="section-header" style="margin-top:1.5rem">Detailed Transit Items</div>
     <div id="transit-table-wrap"></div>
+
+    <!-- ── STOCK-IN-TRANSIT DETAIL (separate upload) ── -->
+    <div class="section-header" style="margin-top:2rem">📦 Stock-in-Transit Detail File</div>
+
+    <div id="stock-transit-no-file" class="alert-info" style="margin-bottom:1rem">
+      Upload a Transit Excel file using the <b>📦 Upload Transit Excel</b> button in the sidebar to view detailed purchasing document and supplying plant breakdown.
+    </div>
+
+    <div id="stock-transit-content" style="display:none">
+      <!-- Filters -->
+      <div class="filter-bar" style="margin-bottom:1rem">
+        <select id="st-filter-pur-doc" style="background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;min-width:200px">
+          <option value="">All Purchasing Documents</option>
+        </select>
+        <select id="st-filter-sup-plant" style="background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;min-width:180px">
+          <option value="">All Supplying Plants</option>
+        </select>
+        <button class="apply-btn small" id="st-filter-apply">Apply</button>
+        <button class="apply-btn secondary small" id="st-filter-clear">Clear</button>
+        <button class="dl-btn" id="btn-dl-st-xlsx">⬇ Excel</button>
+        <button class="dl-btn" id="btn-dl-st-csv">⬇ CSV</button>
+      </div>
+      <div class="kpi-row" id="st-kpis"></div>
+      <div id="st-table-wrap"></div>
+    </div>
   </section>
 
   <!-- ── EXPIRY ── -->
