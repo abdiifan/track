@@ -1210,7 +1210,7 @@ function renderQCSearch() {
       reconSrcHtml = `<div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center">${reconSrcHtml}</div>`;
     }
 
-    return { ...r, _expiryStr: expiryStr, _daysLeft: daysLeft ?? 99999, _statusLabel: statusLabel, _statusClass: statusClass, _reconSrcCol: reconSrcHtml };
+    return { ...r, _expiryStr: expiryStr, _daysLeft: daysLeft ?? 99999, _statusLabel: statusLabel, _statusClass: statusClass, _reconSrcCol: reconSrcHtml, _plantList: r._plantList || r["Plant Name"] || "—" };
   });
 
   const sorted     = annotated.sort((a,b) => a._daysLeft - b._daysLeft);
@@ -1223,6 +1223,7 @@ function renderQCSearch() {
   const cols = [
     {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
     {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
+    {key:"_plantList",                            label:"Plant(s)"},
     {key:"_reconSrcCol",                          label:"Reconciled From", raw:true},
     {key:"_expiryStr",                            label:"Shelf Life Expiry"},
     {key:"_statusLabel",                          label:"Expiry Status"},
@@ -1313,7 +1314,7 @@ function renderQC() {
     {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
     {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
     {key:"Material Group Name",                  label:"Material Group"},
-    {key:"_reconSrcCol",                         label:"Reconciled From", raw:true},
+    {key:"_plantList",                           label:"Plant(s)"},
     {key:"_expiryStr",                           label:"Shelf Life Expiry"},
     {key:"Stock in Quality Inspection",          label:"QC Qty",        fmt:(val,r)=>`${fmtQty(val)}${renderReconBadge(r,"qc")}`, raw:true, rawKey:"Stock in Quality Inspection", cellClass:"col-qty"},
     {key:"Value of Stock in Quality Inspection", label:"QC Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Quality Inspection", cellClass:"col-val"},
@@ -2004,7 +2005,10 @@ function aggregateByMaterial(df) {
         ...row,
         _sourceBreakdown: [],   // [{origCode, convFactor, qcQty, unrestQty, transitQty}]
         _isReconciled:    false,
+        _allPlants:       [],   // collect all plants across rows
       };
+      // Seed plant list
+      if (row["Plant Name"]) matMap[mat]._allPlants.push(row["Plant Name"]);
     } else {
       // Subsequent row for same material code — aggregate
       const target = matMap[mat];
@@ -2017,11 +2021,19 @@ function aggregateByMaterial(df) {
         "Total Value",
       ].forEach(c => { target[c] = (target[c] || 0) + (row[c] || 0); });
       _mergeExpiry(target, row);
-      // Merge non-blank string fields for display
-      if (!target["Plant Name"] && row["Plant Name"]) target["Plant Name"] = row["Plant Name"];
+      // Collect all plant names across every row for this material
+      if (row["Plant Name"] && !target._allPlants.includes(row["Plant Name"])) {
+        target._allPlants.push(row["Plant Name"]);
+      }
       if (!target["Material Group Name"] && row["Material Group Name"]) target["Material Group Name"] = row["Material Group Name"];
       target._isReconciled = true;
     }
+  });
+
+  // After aggregation, build the human-readable plant list column
+  Object.values(matMap).forEach(row => {
+    const plants = (row._allPlants || []).filter(Boolean).sort();
+    row["_plantList"] = plants.length ? plants.join(", ") : (row["Plant Name"] || "—");
   });
 
   // Third pass: for each target material that has reconcile rules pointing to it,
