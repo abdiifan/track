@@ -46,6 +46,30 @@
 //  FIX-R11 refreshReconcileGroupsList: delete listener now uses { once: true }
 //          to prevent double-fire on rapid successive calls.
 //  FIX-R12 localStorage: old versioned keys (v1, v2) cleaned up on startup.
+//
+// Storage-location exclusion & phantom transit hardening (v2.1 → v2.2):
+//  FIX-EXCL-SLOC   Materials excluded by storage location (ADG1, ARG1, ASG1 …)
+//                   are now also stripped from stockTransitRaw so they cannot
+//                   appear anywhere on the site — not even in the transit detail
+//                   section.  Cross-filter applied both in loadTransitFile (when
+//                   transit file loads after main) and in recomputePhantomTransit
+//                   (when main file loads after transit).
+//  FIX-PHANTOM-HIDE Phantom transit items (Stock in Transit > 0 but no matching
+//                   Purchasing Document AND Supplying Plant in the transit file)
+//                   are now hidden from every page except the "Stock in Transit
+//                   Detail" section (lower half of the Transit page).  Previously
+//                   they appeared with a warning badge in the main transit table,
+//                   in Global Search, in Branch Comparison totals, and in the
+//                   Inventory Flow transfer / reorder tables.  Now:
+//                   • renderTransit main table   — phantom rows excluded
+//                   • Global search transit      — phantom rows excluded
+//                   • Branch comparison aggMap   — phantom Transit/TransitQty subtracted
+//                   • Branch comparison matPlantMap — same subtraction
+//                   • Flow transferRows          — phantom rows excluded
+//                   • Flow reorderItems          — only non-phantom transit counts
+//                   The transit KPI card still shows a count so operators know
+//                   unverified items exist; the detail is in the Transit Detail
+//                   section where those rows remain visible.
 // =============================================================================
 
 // ── CONSTANTS ──────────────────────────────────────────────────────────────
@@ -716,6 +740,15 @@ function loadTransitFile(file) {
           };
         });
 
+        // FIX-EXCL-SLOC: Remove any material from stockTransitRaw that was entirely
+        // excluded from rawDf (e.g. all its rows fell under an excluded storage location
+        // or other parse-time filter).  If the material has no presence in rawDf at all
+        // it must not appear anywhere on the site, including the transit detail section.
+        if (rawDf.length) {
+          const allowedMaterials = new Set(rawDf.map(r => String(r["Material"] || "").trim()));
+          df = df.filter(r => allowedMaterials.has(r._st_material));
+        }
+
         stockTransitRaw = df;
         stFilterState   = { purDoc: "", supPlant: "" };
 
@@ -857,7 +890,13 @@ function isPhantomTransit(row) {
 // Called after transit file loads OR after main file loads (when transit already exists).
 // Stamps each rawDf row with _phantomTransitQty / _phantomTransitVal and
 // recomputes Total Value / Total Qty to exclude phantom transit amounts.
+// FIX-EXCL-SLOC: also re-purges stockTransitRaw entries whose material was entirely
+// excluded from rawDf (defence-in-depth for the case where main file loads after transit).
 function recomputePhantomTransit() {
+  if (rawDf.length && stockTransitRaw.length) {
+    const allowedMaterials = new Set(rawDf.map(r => String(r["Material"] || "").trim()));
+    stockTransitRaw = stockTransitRaw.filter(r => allowedMaterials.has(r._st_material));
+  }
   rawDf.forEach(row => {
     if (isPhantomTransit(row)) {
       row._phantomTransitQty = row["Stock in Transit"];
@@ -921,20 +960,24 @@ let _transitColsCache = [];
 function renderTransit() {
   // rawDf is pre-filtered at parse time — no need to re-apply isNonMedical* guards here.
   // Simply restrict to rows with positive transit qty and value.
+  // FIX-PHANTOM-HIDE: phantom transit rows (no PO / no supplying plant) are excluded
+  // from the main table entirely; they only appear in the transit detail file section.
   const df = applyPageFilter("transit").filter(r =>
     r["Stock in Transit"] > 0 &&
-    r["Value of Stock in Transit"] > 0
+    r["Value of Stock in Transit"] > 0 &&
+    !(r._phantomTransitQty > 0)   // exclude phantom rows from this table
   );
 
   const totalTV = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
   const totalTQ = df.reduce((s,r) => s + r["Stock in Transit"], 0);
   const uniqMat = new Set(df.map(r => r["Material"])).size;
 
-  // Phantom transit summary for transit KPIs
-  const phantomRows = df.filter(r => r._phantomTransitQty > 0);
+  // Phantom transit summary for transit KPIs — compute from full applyPageFilter set
+  const allTransitDf = applyPageFilter("transit").filter(r => r["Stock in Transit"] > 0 && r["Value of Stock in Transit"] > 0);
+  const phantomRows = allTransitDf.filter(r => r._phantomTransitQty > 0);
   const phantomCount = phantomRows.length;
   const phantomKpiExtra = phantomCount > 0 && stockTransitRaw.length
-    ? [[`Unverified Transit Items`, String(phantomCount), "No PO & Supplying Plant — excluded from totals", "red"]]
+    ? [[`Unverified Transit Items`, String(phantomCount), "No PO & Supplying Plant — see Transit Detail section", "red"]]
     : [];
 
   setKpis("transit-kpis", [
@@ -1426,10 +1469,13 @@ function renderBranch() {
     if (!aggMap[k]) { aggMap[k] = {PlantName:k,Plant:r["Plant"],TotalValue:0,Unrestricted:0,Transit:0,QC:0,UnrestrictedQty:0,TransitQty:0,QCQty:0,Items:0}; aggMatSets[k] = new Set(); }
     aggMap[k].TotalValue      += r["Total Value"];
     aggMap[k].Unrestricted    += r["Value of Unrestricted Stock"];
-    aggMap[k].Transit         += r["Value of Stock in Transit"];
+    // FIX-PHANTOM-BRANCH: exclude phantom (no PO/supplying plant) transit from branch totals
+    const phantomVal = r._phantomTransitVal || 0;
+    const phantomQty = r._phantomTransitQty || 0;
+    aggMap[k].Transit         += r["Value of Stock in Transit"] - phantomVal;
     aggMap[k].QC              += r["Value of Stock in Quality Inspection"];
     aggMap[k].UnrestrictedQty += r["Unrestricted Stock"];
-    aggMap[k].TransitQty      += r["Stock in Transit"];
+    aggMap[k].TransitQty      += r["Stock in Transit"] - phantomQty;
     aggMap[k].QCQty           += r["Stock in Quality Inspection"];
     aggMatSets[k].add(String(r["Material"]));
   });
@@ -1451,12 +1497,15 @@ function renderBranch() {
     }
     if (!matPlantMap[mat][pln]) matPlantMap[mat][pln] = {Unrestricted:0,Transit:0,QC:0,TotalValue:0,TotalQty:0,UnrestrictedQty:0,TransitQty:0,QCQty:0};
     matPlantMap[mat][pln].Unrestricted    += r["Value of Unrestricted Stock"];
-    matPlantMap[mat][pln].Transit         += r["Value of Stock in Transit"];
+    // FIX-PHANTOM-BRANCH: exclude phantom transit from per-material-per-branch data
+    const phantomVal = r._phantomTransitVal || 0;
+    const phantomQty = r._phantomTransitQty || 0;
+    matPlantMap[mat][pln].Transit         += r["Value of Stock in Transit"] - phantomVal;
     matPlantMap[mat][pln].QC             += r["Value of Stock in Quality Inspection"];
     matPlantMap[mat][pln].TotalValue      += r["Total Value"];
     // BUG-BRANCH-2 FIX: TotalQty is derived — recompute rather than accumulate
     matPlantMap[mat][pln].UnrestrictedQty += r["Unrestricted Stock"];
-    matPlantMap[mat][pln].TransitQty      += r["Stock in Transit"];
+    matPlantMap[mat][pln].TransitQty      += r["Stock in Transit"] - phantomQty;
     matPlantMap[mat][pln].QCQty           += r["Stock in Quality Inspection"];
     matPlantMap[mat][pln].TotalQty        = matPlantMap[mat][pln].UnrestrictedQty
                                           + matPlantMap[mat][pln].TransitQty
@@ -1725,7 +1774,11 @@ function renderFlow() {
   const totalQty   = df.reduce((s,r) => s + r["Total Qty"], 0);
   const availQty   = df.reduce((s,r) => s + r["Unrestricted Stock"], 0);
 
-  const reorderItems = df.filter(r => r["Unrestricted Stock"] === 0 && (r["Stock in Transit"] > 0 || r["Stock in Quality Inspection"] > 0));
+  // FIX-PHANTOM-FLOW: for reorder alerts, only count non-phantom transit as "incoming"
+  const reorderItems = df.filter(r => r["Unrestricted Stock"] === 0 && (
+    (r["Stock in Transit"] > 0 && !(r._phantomTransitQty > 0)) ||
+    r["Stock in Quality Inspection"] > 0
+  ));
 
   setKpis("flow-kpis", [
     ["Total Inventory",      fmtETB(totalVal),   `${fmtQty(totalQty)} units`,               "blue"],
@@ -1786,7 +1839,8 @@ function renderFlow() {
     {key:"Stock in Transit",          label:"Transit Qty",        fmt:fmtQty, rawKey:"Stock in Transit",          cellClass:"col-qty"},
     {key:"Value of Stock in Transit", label:"Transit Value (ETB)",fmt:fmtETB, rawKey:"Value of Stock in Transit", cellClass:"col-val"},
   ];
-  const transferRows = sortBy(df.filter(r => r["Stock in Transit"] > 0), "Value of Stock in Transit").map(r => {
+  // FIX-PHANTOM-FLOW: exclude phantom transit (no PO/supplying plant) from transfer table
+  const transferRows = sortBy(df.filter(r => r["Stock in Transit"] > 0 && !(r._phantomTransitQty > 0)), "Value of Stock in Transit").map(r => {
     const info = getTransitInfo(r["Material"], r["Plant"]);
     return { ...r, _purDoc: info.purDoc, _supPlant: info.supPlant };
   });
@@ -2278,15 +2332,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const transitRows = stockTransitRaw.filter(r => {
       const code = String(r["_st_material"] || "").toLowerCase();
       const desc = String(r["_st_desc"]     || "").toLowerCase();
-      return code.includes(q) || desc.includes(q);
+      // FIX-PHANTOM-SEARCH: phantom rows (no PO & no supplying plant) must not appear
+      // in global search — they are only visible in the transit detail section
+      const isPhantom = !r._st_purDoc && !r._st_supPlant;
+      return !isPhantom && (code.includes(q) || desc.includes(q));
     });
 
     // ── Also search "Stock in Transit" column in main data ──
+    // FIX-PHANTOM-SEARCH: exclude phantom rows (no PO/supplying plant) from search results
     const inTransitMain = base.filter(r => {
       const code = String(r["Material"] || "").toLowerCase();
       const desc = String(r["Material Description"] || "").toLowerCase();
       const hasTransit = parseFloat(r["Stock in Transit"] || 0) > 0;
-      return hasTransit && (code.includes(q) || desc.includes(q));
+      const isPhantom  = r._phantomTransitQty > 0;
+      return hasTransit && !isPhantom && (code.includes(q) || desc.includes(q));
     });
 
     let html = "";
