@@ -437,8 +437,15 @@
       <button type="button" class="apply-btn secondary small" id="branch-filter-clear">Clear</button>
     </div>
     <div class="filter-row" id="branch-select-row">
-      <label class="filter-label">Select branches to compare (hold Ctrl/Cmd for multi-select):</label>
-      <select id="branch-select" multiple size="4"></select>
+      <!-- FIX-R7: replaced native <select multiple> with custom ms-wrap for UX consistency -->
+      <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;margin-top:0.4rem">
+        <span style="font-size:0.75rem;color:var(--muted)">Select branches to compare:</span>
+        <div class="ms-wrap" id="ms-branch-select" style="min-width:260px">
+          <button class="ms-btn" type="button">All Branches <span class="ms-arrow">▾</span></button>
+          <div class="ms-dropdown" id="ms-branch-select-dd"></div>
+        </div>
+        <button type="button" class="apply-btn small" id="branch-select-apply">Compare</button>
+      </div>
     </div>
     <div id="branch-tabs-wrap" style="margin-top:1.2rem"></div>
   </section>
@@ -462,7 +469,7 @@
     <!-- Material Search for Flow -->
     <div class="chart-box full" style="margin-bottom:1rem">
       <div class="section-header" style="margin-bottom:0.4rem">🔍 Material Inventory Flow Lookup</div>
-      <div style="color:var(--muted);font-size:0.78rem;margin-bottom:0.75rem">Search any material to see all its QC stock across plants and batches</div>
+      <div style="color:var(--muted);font-size:0.78rem;margin-bottom:0.75rem">Search any material to see its inventory flow — available, transit, and QC quantities across all plants</div>
       <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">
         <input id="flow-search-input" type="text" placeholder="Type material code or name…"
           style="flex:1;min-width:220px;max-width:400px;padding:0.45rem 0.75rem;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:0.82rem;outline:none" />
