@@ -14,57 +14,6 @@
 </head>
 <body>
 
-<!-- ═══════════════ MATERIAL CODE RECONCILIATION SIDEBAR ═══════════════ -->
-<div id="reconcile-overlay" class="overlay" style="display:none"></div>
-<aside id="reconcile-panel" class="reconcile-panel" style="display:none">
-  <div class="rp-header">
-    <div>
-      <div class="rp-title">🔗 UOM Conversion &amp; Reconciliation</div>
-      <div class="rp-sub">Convert source material codes → target codes with unit conversion</div>
-    </div>
-    <button id="reconcile-close" class="icon-btn">✕</button>
-  </div>
-  <div class="rp-body">
-
-    <!-- Upload mapping Excel -->
-    <div class="rp-section-label">UPLOAD MAPPING FILE</div>
-    <div class="rp-upload-hint">Excel columns: <b>Material (source)</b> · <b>Material Description</b> · <b>Unit</b> · <b>Conversion factor</b> · <b>Material (target)</b> · <b>Material Description</b> · <b>Unit</b></div>
-    <label class="upload-btn" style="margin-top:0.5rem;font-size:0.75rem" for="rp-file-input">
-      📂 Upload Mapping Excel (.xlsx)
-      <input type="file" id="rp-file-input" accept=".xlsx,.xls" style="display:none" />
-    </label>
-    <div id="rp-upload-status" style="font-size:0.72rem;margin-top:0.4rem;color:var(--muted)"></div>
-
-    <!-- Manual entry -->
-    <div class="rp-section-label" style="margin-top:1.3rem">ADD CONVERSION MANUALLY</div>
-    <div class="rp-manual-grid">
-      <div class="rp-manual-col">
-        <div class="rp-col-label">SOURCE (in your data)</div>
-        <input id="rp-src-search" type="text" placeholder="Search source code/desc…" class="rp-input" />
-        <div id="rp-src-results" class="rp-results" style="max-height:140px"></div>
-        <div id="rp-src-selected" class="rp-selected-chip" style="display:none"></div>
-      </div>
-      <div class="rp-manual-col">
-        <div class="rp-col-label">TARGET (canonical)</div>
-        <input id="rp-tgt-search" type="text" placeholder="Search target code/desc…" class="rp-input" />
-        <div id="rp-tgt-results" class="rp-results" style="max-height:140px"></div>
-        <div id="rp-tgt-selected" class="rp-selected-chip" style="display:none"></div>
-      </div>
-    </div>
-    <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.7rem;flex-wrap:wrap">
-      <label style="font-size:0.72rem;color:var(--muted);white-space:nowrap">Conversion Factor <span style="color:var(--amber)" title="Source qty × factor = Target qty">ⓘ</span></label>
-      <input id="rp-conv-factor" type="number" min="0.000001" step="any" value="1" style="width:90px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:5px 8px;border-radius:6px;font-size:13px" />
-      <button id="rp-add-manual" class="apply-btn" style="flex:1;min-width:120px">+ Add Conversion</button>
-    </div>
-
-    <!-- Existing conversions -->
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:1.5rem">
-      <div class="rp-section-label" style="margin:0">ACTIVE CONVERSIONS <span id="rp-group-count" style="color:var(--amber)"></span></div>
-      <button id="rp-clear-all" class="apply-btn secondary" style="font-size:0.7rem;padding:3px 10px">Clear All</button>
-    </div>
-    <div id="rp-groups-list" style="margin-top:0.6rem"></div>
-  </div>
-</aside>
 
 <!-- ═══════════════════════════ SIDEBAR ═══════════════════════════ -->
 <aside id="sidebar">
@@ -103,9 +52,6 @@
     <input type="file" id="transitFileInput" accept=".xlsx,.xls" />
   </label>
   <div id="transitFileStatus"></div>
-
-  <div class="sidebar-divider"></div>
-  <button class="nav-btn reconcile-nav-btn" id="open-reconcile-btn">🔗 Material Reconciliation</button>
 
   <!-- ══ GLOBAL MATERIAL SEARCH (Sidebar) ══ -->
   <div id="global-search-bar" style="display:none">
@@ -151,7 +97,6 @@
       <div class="feature-chip">🔬 QC Inspection</div>
       <div class="feature-chip">🏢 Branch Compare</div>
       <div class="feature-chip">📦 Inventory Flow</div>
-      <div class="feature-chip">🔗 Code Reconciliation</div>
     </div>
   </div>
 
@@ -216,10 +161,6 @@
       <div class="home-info-item">
         <div class="home-info-icon">🇪🇹</div>
         <div><div class="home-info-title">ETB Currency</div><div class="home-info-sub">All values in Ethiopian Birr</div></div>
-      </div>
-      <div class="home-info-item">
-        <div class="home-info-icon">🔗</div>
-        <div><div class="home-info-title">Code Reconciliation</div><div class="home-info-sub">UOM conversion between material codes</div></div>
       </div>
       <div class="home-info-item">
         <div class="home-info-icon">🔒</div>
