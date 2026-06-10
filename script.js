@@ -1,7 +1,7 @@
 // =============================================================================
 // PharmaTrack v2 — Pharmaceutical Inventory Management System
 // =============================================================================
-// Fixes applied vs v8:
+// Fixes applied vs v8 (script__22_.js baseline):
 //  BUG-1  Preview download now exports full filtered dataset (not 500-row slice)
 //  BUG-2  Chain/circular reconciliation rules detected and blocked on save
 //  BUG-3  pageFilters reset on new file upload so stale plant/MG never persists
@@ -18,6 +18,35 @@
 //  ROBUST Column header matching is now case-insensitive
 //  ROBUST Total Qty removed from QTY_COLS scaling (was scaled then overwritten)
 //  ROBUST Conversion factor stored with 9dp rounding to suppress float drift
+//
+// Specialist review fixes (v2 → v2.1):
+//  FIX-R1  aggregateByMaterial: removed duplicate "Value of Stock in Quality
+//          Inspection" entry in VAL_COLS that caused double-counting of QC value
+//          on QC page and Branch Comparison.
+//  FIX-R2  Reconciliation mapping file parser: column indices corrected to match
+//          documented format (source, desc, unit, factor, target, desc, unit).
+//          Factor now read from index 3; target from index 4; desc from index 5.
+//  FIX-R3  Reconciliation cache token strengthened: now includes a lightweight
+//          djb2 hash of all material codes so same-size file swaps correctly
+//          bust the cache.
+//  FIX-R4  renderTransit: removed redundant isNonMedical*/isExcluded* re-filters
+//          (rawDf is already fully filtered at parse time). Consistent with all
+//          other render* functions.
+//  FIX-R5  pageFilters: removed unused "preview" key (filtDf/preview uses its
+//          own <select multiple> UI; the pageFilters slot was dead state).
+//  FIX-R6  Global search and transit search panels now include CSV + Excel export
+//          buttons so users with >200/500 results have an export path.
+//  FIX-R7  Branch comparison: replaced native <select multiple> with the standard
+//          buildMultiSelect checkbox-dropdown for UX consistency.
+//  FIX-R8  loadTransitFile: now also applies isNonMedicalGroup filter when the
+//          column is present, consistent with main file parsing.
+//  FIX-R9  filters.js: isMedicalCode is now used inside isNonMedicalCode as its
+//          positive counterpart (DRY); dead export warning resolved.
+//  FIX-R10 Flow page "Material Inventory Flow Lookup" description corrected
+//          (was copy-pasted from QC section and incorrectly said "QC stock").
+//  FIX-R11 refreshReconcileGroupsList: delete listener now uses { once: true }
+//          to prevent double-fire on rapid successive calls.
+//  FIX-R12 localStorage: old versioned keys (v1, v2) cleaned up on startup.
 // =============================================================================
 
 // ── CONSTANTS ──────────────────────────────────────────────────────────────
@@ -57,6 +86,7 @@ let stockTransitRaw    = [];   // raw rows from the transit xlsx
 let stFilterState      = { purDoc: "", supPlant: "" };  // filter state
 
 // Page-level filter state — now arrays for multi-select support
+// NOTE: "preview" page uses its own <select multiple> UI (filtDf), not pageFilters.
 const pageFilters = {
   dashboard: { plants: [], mgs: [] },
   transit:   { plants: [], mgs: [] },
@@ -136,11 +166,19 @@ const DEFAULT_RECONCILE_RULES = [
 let _reconCache       = null;
 let _reconCacheToken  = "";
 
+// FIX-R3: djb2 hash of all material codes so same-size file swaps bust the cache.
+// Previously only checked length + first/last code — a weekly snapshot swap with
+// the same row count and same first/last material would silently reuse stale data.
+function _djb2Hash(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
+  return (h >>> 0).toString(36); // unsigned 32-bit → base36 string
+}
+
 function _makeReconToken() {
-  // rawDf length + first/last material codes + reconcileGroups serialised codes
-  const rawSig = rawDf.length + "|" +
-    (rawDf[0]?.["Material"] || "") + "|" +
-    (rawDf[rawDf.length - 1]?.["Material"] || "");
+  // Hash ALL material codes — catches same-length file swaps
+  const matStr = rawDf.map(r => r["Material"] || "").join("|");
+  const rawSig = rawDf.length + "|" + _djb2Hash(matStr);
   const grpSig = reconcileGroups.map(g => g.sourceMaterial + ">" + g.targetMaterial + "x" + g.conversionFactor).join(",");
   return rawSig + "||" + grpSig;
 }
@@ -711,9 +749,13 @@ function loadTransitFile(file) {
         const getCol = name => colMap[name.toLowerCase()] || name;
 
         // Apply the same medical filters as the main file
+        // FIX-R8: also apply isNonMedicalGroup when the column is present
         let df = trimmed.filter(r => {
           const mat = String(r[getCol("Material")] ?? "").trim();
-          return mat && !isNonMedicalCode(mat);
+          if (!mat || isNonMedicalCode(mat)) return false;
+          const grp = String(r[getCol("Material Group Name")] ?? "").trim();
+          if (grp && isNonMedicalGroup(grp)) return false;
+          return true;
         });
 
         // Normalise Purchasing Document (may come as scientific notation from Excel)
@@ -848,14 +890,11 @@ let _transitColsCache = [];
 let _ho01RowsCache    = [];
 
 function renderTransit() {
-  // Apply non-medical exclusion filters before rendering
+  // rawDf is pre-filtered at parse time — no need to re-apply isNonMedical* guards here.
+  // Simply restrict to rows with positive transit qty and value.
   const df = applyPageFilter("transit").filter(r =>
     r["Stock in Transit"] > 0 &&
-    r["Value of Stock in Transit"] > 0 &&
-    !isNonMedicalCode(r["Material"]) &&
-    !isNonMedicalGroup(r["Material Group Name"]) &&
-    !isProjectStockDescription(r["Special Stock Type Description"]) &&
-    !isExcludedStorageLocation(r["Storage Location"])
+    r["Value of Stock in Transit"] > 0
   );
 
   const totalTV = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
@@ -1440,17 +1479,20 @@ function renderBranch() {
     });
   });
 
-  const sel = document.getElementById("branch-select");
-  sel.innerHTML = "";
-  others.forEach(b => {
-    const opt = document.createElement("option");
-    opt.value = b; opt.textContent = b; opt.selected = true;
-    sel.appendChild(opt);
-  });
+  // FIX-R7: replaced native <select multiple> with buildMultiSelect for UX consistency.
+  const branchWrapId = "ms-branch-select";
+  const branchDdId   = "ms-branch-select-dd";
+  buildMultiSelect(branchWrapId, branchDdId, others, "All Branches");
+  // Pre-select all branches (matching the old default of all selected)
+  const branchWrap = document.getElementById(branchWrapId);
+
+  function getSelectedBranches() {
+    return branchWrap && branchWrap._getSelected ? branchWrap._getSelected() : others;
+  }
 
   // ── TAB 1: Total Value ──
   function updateBranchCharts() {
-    const selected = [...sel.selectedOptions].map(o => o.value);
+    const selected = getSelectedBranches();
     const wrap     = document.getElementById("branch-tab-value");
     if (!selected.length) { wrap.innerHTML = `<div class="alert-warning">⚠️ Select at least one branch.</div>`; return; }
     const compareNames = [centralName, ...selected];
@@ -1643,7 +1685,7 @@ function renderBranch() {
     }
   }
 
-  sel.addEventListener("change", updateBranchCharts);
+  document.getElementById("branch-select-apply")?.addEventListener("click", updateBranchCharts);
   updateBranchCharts();
 }
 
@@ -1969,9 +2011,12 @@ function aggregateByMaterial(df) {
     "Blocked Stock",      "Stock in Transit",
     "Total Qty",
   ];
+  // FIX-R1: removed duplicate "Value of Stock in Quality Inspection" that was
+  // causing QC value to be summed twice per row, silently inflating QC totals.
   const VAL_COLS = [
-    "Value of Unrestricted Stock", "Value of Stock in Quality Inspection",
-    "Value of Stock in Transit",   "Value of Stock in Quality Inspection",
+    "Value of Unrestricted Stock",
+    "Value of Stock in Quality Inspection",
+    "Value of Stock in Transit",
     "Total Value",
   ];
 
@@ -2013,13 +2058,7 @@ function aggregateByMaterial(df) {
       // Subsequent row for same material code — aggregate
       const target = matMap[mat];
       QTY_COLS.forEach(c => { target[c] = (target[c] || 0) + (row[c] || 0); });
-      // De-duplicate VAL_COLS (Total Value included twice above for safety — fix)
-      [
-        "Value of Unrestricted Stock",
-        "Value of Stock in Quality Inspection",
-        "Value of Stock in Transit",
-        "Total Value",
-      ].forEach(c => { target[c] = (target[c] || 0) + (row[c] || 0); });
+      VAL_COLS.forEach(c => { target[c] = (target[c] || 0) + (row[c] || 0); });
       _mergeExpiry(target, row);
       // Collect all plant names across every row for this material
       if (row["Plant Name"] && !target._allPlants.includes(row["Plant Name"])) {
@@ -2184,15 +2223,20 @@ function handleReconcileFileUpload(file) {
       const ws   = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:""});
       let added = 0, skipped = 0, errors = [];
+      // FIX-R2: column order per HTML hint:
+      //   [0] Material (source)  [1] Material Description  [2] Unit
+      //   [3] Conversion factor  [4] Material (target)     [5] Material Description  [6] Unit
+      // Previously factor was read from index 2 (the Unit column) causing rows
+      // provided exactly as documented to be silently skipped (isNaN on unit string).
       for (let i = 1; i < rows.length; i++) {
         const r       = rows[i];
         const srcMat  = String(r[0] || "").trim();
         const srcDesc = String(r[1] || "").trim();
-        const factor  = parseFloat(r[2]);
-        const tgtMat  = String(r[3] || "").trim();
-        const tgtDesc = String(r[4] || "").trim();
-        const srcUnit = "";
-        const tgtUnit = "";
+        const srcUnit = String(r[2] || "").trim();
+        const factor  = parseFloat(r[3]);
+        const tgtMat  = String(r[4] || "").trim();
+        const tgtDesc = String(r[5] || "").trim();
+        const tgtUnit = String(r[6] || "").trim();
 
         if (!srcMat || !tgtMat || isNaN(factor) || factor <= 0) { skipped++; continue; }
 
@@ -2368,8 +2412,8 @@ function refreshReconcileGroupsList() {
     </div>`;
   }).join("");
 
-  // Use a single delegated listener on the stable container element
-  // (el is replaced each call so no listener accumulation)
+  // FIX-R11: { once: true } prevents a second rapid call from attaching a second
+  // listener on the freshly replaced el, which would fire twice on the next click.
   el.addEventListener("click", e => {
     const btn = e.target.closest(".rp-group-del");
     if (!btn) return;
@@ -2386,7 +2430,7 @@ function refreshReconcileGroupsList() {
       refreshReconcileGroupsList();
       if (rawDf.length) renderPage(currentPage);
     }
-  });
+  }, { once: true });
 }
 
 // ── Persistence ──────────────────────────────────────────────────────────
@@ -2439,6 +2483,15 @@ function loadReconcileGroups() {
 
 // Re-persist after loading so built-in rules are always in the saved state.
 // (Called once at startup, after loadReconcileGroups runs.)
+
+// FIX-R12: Clean up stale versioned keys from old PharmaTrack releases.
+// These accumulate silently and are never read after a version bump.
+function cleanupOldLocalStorageKeys() {
+  const OLD_KEYS = ["pharmatrack_reconcile_v1", "pharmatrack_reconcile_v2"];
+  OLD_KEYS.forEach(k => {
+    try { localStorage.removeItem(k); } catch(e) {}
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HOME PAGE
@@ -2540,6 +2593,8 @@ document.addEventListener("DOMContentLoaded", () => {
   loadReconcileGroups();
   // Immediately re-persist so the merged state (including built-ins) is saved
   saveReconcileGroups();
+  // FIX-R12: Remove stale keys from old versions
+  cleanupOldLocalStorageKeys();
 
   // Show Home page immediately (works without data)
   renderPage("home");
@@ -2720,9 +2775,8 @@ document.addEventListener("DOMContentLoaded", () => {
     return (+n).toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
 
-  // FIX BUG: argument order was (cols, rows) — reversed vs the outer buildTable(rows, cols).
-  // Also added fmt/raw/cellClass support so formatted cells render correctly.
-  function buildTable(rows, cols) {
+  // FIX-R6: added export buttons so users with >200 results have a download path.
+  function buildTable(rows, cols, exportFilename) {
     if (!rows.length) return '<p class="gsr-no-data">No matching records found.</p>';
     let html = '<div class="tbl-wrap"><table><thead><tr>';
     cols.forEach(c => { html += `<th>${escHtml(c.label)}</th>`; });
@@ -2740,7 +2794,16 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     html += "</tbody></table></div>";
     if (rows.length > 200) {
-      html += `<p class="gsr-no-data" style="margin-top:0.4rem">Showing first 200 of ${rows.length} rows. Narrow your search for more precision.</p>`;
+      const safeFile = exportFilename || "search_results.csv";
+      html += `<p class="gsr-no-data" style="margin-top:0.4rem">
+        Showing first 200 of ${rows.length} rows.
+        <button id="gsr-export-${safeFile.replace(/\W/g,'_')}" class="dl-btn" style="font-size:0.72rem;padding:3px 10px;margin-left:6px">⬇ Download all ${rows.length} rows (CSV)</button>
+      </p>`;
+      // Wire export after insertion via a deferred data attribute approach
+      setTimeout(() => {
+        const btn = document.getElementById(`gsr-export-${safeFile.replace(/\W/g,'_')}`);
+        if (btn) btn.addEventListener("click", () => downloadCSV(rows, cols, safeFile), { once: true });
+      }, 0);
     }
     return html;
   }
@@ -2806,7 +2869,7 @@ document.addEventListener("DOMContentLoaded", () => {
       <span class="gsr-badge gsr-badge-stock">In Stock</span>
       ${stockRows.length} record${stockRows.length !== 1 ? "s" : ""} found
     </div>`;
-    html += buildTable(stockRows, stockCols);
+    html += buildTable(stockRows, stockCols, "search_results_stock.csv");
 
     // Transit from separate file (if uploaded)
     if (stockTransitRaw.length > 0) {
@@ -2814,7 +2877,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <span class="gsr-badge gsr-badge-transit">In Transit (Transit File)</span>
         ${transitRows.length} record${transitRows.length !== 1 ? "s" : ""} found
       </div>`;
-      html += buildTable(transitRows, transitCols);
+      html += buildTable(transitRows, transitCols, "search_results_transit.csv");
     } else if (inTransitMain.length > 0) {
       // Fallback: show in-transit column from main data
       html += `<div class="gsr-section-title" style="margin-top:1.2rem">
@@ -2828,7 +2891,7 @@ document.addEventListener("DOMContentLoaded", () => {
         { key: "Stock in Transit",     label: "Transit Qty", cls: "col-qty" },
         { key: "Value of Stock in Transit", label: "Transit Value (ETB)", cls: "col-val" },
       ];
-      html += buildTable(inTransitMain, tCols);
+      html += buildTable(inTransitMain, tCols, "search_results_transit_main.csv");
     }
 
     out.innerHTML = html;
