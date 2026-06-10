@@ -103,9 +103,10 @@ function getReconciledBase() {
 // FIX BUG-3: reset all page filters when a new file is loaded so stale plant/MG
 // values from the previous file can never produce a blank result set.
 function resetPageFilters() {
+  // BUG-RESET FIX: guard against pages (e.g. "branch") that have no "plants" key
   Object.keys(pageFilters).forEach(page => {
-    pageFilters[page].plants = [];
-    pageFilters[page].mgs    = [];
+    if ("plants" in pageFilters[page]) pageFilters[page].plants = [];
+    pageFilters[page].mgs = [];
   });
 }
 
@@ -351,6 +352,8 @@ function buildMultiSelect(wrapId, ddId, items, placeholder) {
 
   // Expose refresh function on the wrap element
   wrap._refreshOptions = function(newItems) {
+    // BUG-MULTISELECT FIX: update the items array when newItems is provided
+    if (Array.isArray(newItems)) items = newItems;
     renderItems(searchInput.value || "");
     updateLabel();
   };
@@ -1261,43 +1264,48 @@ function renderQC() {
 // BRANCH COMPARISON
 // ═══════════════════════════════════════════════════════════════════════════
 function renderBranch() {
+  // BUG-BRANCH-1 FIX: Use baseDf (pre-aggregation, one row per plant per material)
+  // for branch totals and matPlantMap. aggregateByMaterial collapses all plants into
+  // a single row per material so it CANNOT be used for per-branch breakdowns.
+  // aggregateByMaterial is still used for the material tab (Tab 2) display only.
   const baseDf = applyPageFilter("branch");
-  // Aggregate by material so source codes consolidate into canonical target codes
-  // across all plants before the branch-level breakdown is built.
-  const df = aggregateByMaterial(baseDf);
 
-  const plants = [...new Set(df.map(r => String(r["Plant"]).toUpperCase()))];
+  // Detect central branch from raw (multi-plant) data
+  const plants = [...new Set(baseDf.map(r => String(r["Plant"]).toUpperCase()))];
   let centralCode, centralName;
   if (plants.includes("HO01")) {
     centralCode = "HO01";
-    centralName = df.find(r => String(r["Plant"]).toUpperCase() === "HO01")?.["Plant Name"] || "HO01";
+    centralName = baseDf.find(r => String(r["Plant"]).toUpperCase() === "HO01")?.["Plant Name"] || "HO01";
     document.getElementById("branch-central-info").style.display = "none";
   } else {
     const totals = {};
-    df.forEach(r => { const p = r["Plant Name"]; totals[p] = (totals[p] || 0) + r["Total Value"]; });
+    baseDf.forEach(r => { const p = r["Plant Name"]; totals[p] = (totals[p] || 0) + r["Total Value"]; });
     centralName = Object.entries(totals).sort((a,b) => b[1]-a[1])[0]?.[0] || "";
     document.getElementById("branch-central-info").style.display = "block";
     document.getElementById("branch-central-info").innerHTML = `ℹ️ HO01 not found — using <b>${escHtml(centralName)}</b> as central branch (highest inventory value).`;
   }
 
+  // Build per-branch aggregation from baseDf (correct: each row is one plant)
   const aggMap = {};
-  df.forEach(r => {
+  baseDf.forEach(r => {
     const k = r["Plant Name"];
     if (!aggMap[k]) aggMap[k] = {PlantName:k,Plant:r["Plant"],TotalValue:0,Unrestricted:0,Transit:0,QC:0,UnrestrictedQty:0,TransitQty:0,QCQty:0,Items:0};
-    aggMap[k].TotalValue     += r["Total Value"];
-    aggMap[k].Unrestricted   += r["Value of Unrestricted Stock"];
-    aggMap[k].Transit        += r["Value of Stock in Transit"];
-    aggMap[k].QC             += r["Value of Stock in Quality Inspection"];
+    aggMap[k].TotalValue      += r["Total Value"];
+    aggMap[k].Unrestricted    += r["Value of Unrestricted Stock"];
+    aggMap[k].Transit         += r["Value of Stock in Transit"];
+    aggMap[k].QC              += r["Value of Stock in Quality Inspection"];
     aggMap[k].UnrestrictedQty += r["Unrestricted Stock"];
-    aggMap[k].TransitQty     += r["Stock in Transit"];
-    aggMap[k].QCQty          += r["Stock in Quality Inspection"];
+    aggMap[k].TransitQty      += r["Stock in Transit"];
+    aggMap[k].QCQty           += r["Stock in Quality Inspection"];
     aggMap[k].Items++;
   });
   const branchAgg = Object.values(aggMap);
   const others    = branchAgg.map(r => r.PlantName).filter(b => b !== centralName);
 
+  // BUG-BRANCH-1 FIX: Build matPlantMap from baseDf so every (material, plant) pair
+  // is a separate bucket. Using aggregated df would give only one plant per material.
   const matPlantMap = {};
-  df.forEach(r => {
+  baseDf.forEach(r => {
     const mat = r["Material"], pln = r["Plant Name"];
     if (!matPlantMap[mat]) {
       matPlantMap[mat] = {
@@ -1310,11 +1318,16 @@ function renderBranch() {
     matPlantMap[mat][pln].Transit         += r["Value of Stock in Transit"];
     matPlantMap[mat][pln].QC             += r["Value of Stock in Quality Inspection"];
     matPlantMap[mat][pln].TotalValue      += r["Total Value"];
-    matPlantMap[mat][pln].TotalQty        += r["Total Qty"];
+    // BUG-BRANCH-2 FIX: TotalQty is derived — recompute rather than accumulate
     matPlantMap[mat][pln].UnrestrictedQty += r["Unrestricted Stock"];
     matPlantMap[mat][pln].TransitQty      += r["Stock in Transit"];
     matPlantMap[mat][pln].QCQty           += r["Stock in Quality Inspection"];
+    matPlantMap[mat][pln].TotalQty        = matPlantMap[mat][pln].UnrestrictedQty
+                                          + matPlantMap[mat][pln].TransitQty
+                                          + matPlantMap[mat][pln].QCQty;
   });
+  // aggregated df is still needed for the material-level Tab 2 table display
+  const df = aggregateByMaterial(baseDf);
 
   const tabsHtml = `
     <div class="branch-tabs" id="branch-tabs">
@@ -1366,16 +1379,33 @@ function renderBranch() {
       {key:"QCQty",           label:"QC Qty",               fmt:fmtQty, rawKey:"QCQty",           cellClass:"col-qty"},
       {key:"Items",           label:"# Line Items"},
     ];
-    wrap.innerHTML = `<div id="branch-table-wrap-inner" style="margin-bottom:1rem">${buildTable(compareDf, bCols, r => r.PlantName === centralName ? "row-blue" : "")}</div>`;
+    wrap.innerHTML = `
+      <div id="branch-chart-wrap" style="margin-bottom:1.2rem"></div>
+      <div id="branch-table-wrap-inner" style="margin-bottom:1rem">${buildTable(compareDf, bCols, r => r.PlantName === centralName ? "row-blue" : "")}</div>`;
     document.getElementById("btn-dl-branch-csv").onclick  = () => downloadCSV(compareDf,   bCols, "branch_comparison.csv");
     document.getElementById("btn-dl-branch-xlsx").onclick = () => downloadExcel(compareDf, bCols, "branch_comparison.xlsx");
+
+    // BUG-BRANCH-CHART FIX: render a grouped bar chart comparing branches by value category
+    const sorted = [...compareDf].sort((a,b) => {
+      if (a.PlantName === centralName) return -1;
+      if (b.PlantName === centralName) return 1;
+      return b.TotalValue - a.TotalValue;
+    });
+    Plotly.newPlot("branch-chart-wrap", [
+      { type:"bar", name:"Unrestricted (ETB)", x:sorted.map(r=>r.PlantName), y:sorted.map(r=>r.Unrestricted), marker:{color:"#3fb950"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>" },
+      { type:"bar", name:"In Transit (ETB)",   x:sorted.map(r=>r.PlantName), y:sorted.map(r=>r.Transit),      marker:{color:"#d29922"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>" },
+      { type:"bar", name:"In QC (ETB)",        x:sorted.map(r=>r.PlantName), y:sorted.map(r=>r.QC),           marker:{color:"#f85149"}, hovertemplate:"<b>%{x}</b><br>ETB %{y:,.0f}<extra></extra>" },
+    ], pl({ height:300, barmode:"stack", margin:{l:20,r:20,t:30,b:100},
+      title:{text:"Inventory Value by Branch", font:{color:"#8b949e",size:13}} }), PLOTLY_CONFIG);
   }
 
   // ── TAB 2: Material Across Branches ──
   let matTabInitialized = false;
   function renderMaterialTab() {
     const wrap         = document.getElementById("branch-tab-material");
-    const allPlantNames = [...new Set(df.map(r => r["Plant Name"]))].sort((a,b) => {
+    // BUG-BRANCH-3 FIX: use baseDf to enumerate plant names — df (aggregated) may
+    // collapse multi-plant materials to a single plant, hiding some branch columns.
+    const allPlantNames = [...new Set(baseDf.map(r => r["Plant Name"]))].sort((a,b) => {
       if (a === centralName) return -1; if (b === centralName) return 1; return a.localeCompare(b);
     });
 
@@ -1722,10 +1752,12 @@ function renderPreviewTable() {
 // Also builds a "_plantList" string of all plants stocking the material.
 
 function aggregateByMaterial(df) {
+  // NOTE: Total Qty is intentionally excluded from QTY_COLS — it is a derived
+  // sum (Unrestricted + Transit + QC) and must be recomputed after aggregation,
+  // not accumulated directly (which would double-count it).
   const QTY_COLS = [
     "Unrestricted Stock", "Stock in Quality Inspection",
     "Blocked Stock",      "Stock in Transit",
-    "Total Qty",
   ];
   const VAL_COLS = [
     "Value of Unrestricted Stock",
@@ -1763,8 +1795,11 @@ function aggregateByMaterial(df) {
     }
   });
 
-  // Build human-readable plant list column
+  // Recompute derived totals AFTER aggregation to prevent double-counting.
+  // Total Qty / Total Value are sums of components — never accumulate directly.
   Object.values(matMap).forEach(row => {
+    row["Total Qty"]   = (row["Unrestricted Stock"] || 0) + (row["Stock in Transit"] || 0) + (row["Stock in Quality Inspection"] || 0);
+    row["Total Value"] = (row["Value of Unrestricted Stock"] || 0) + (row["Value of Stock in Transit"] || 0) + (row["Value of Stock in Quality Inspection"] || 0);
     const plants = (row._allPlants || []).filter(Boolean).sort();
     row["_plantList"] = plants.length ? plants.join(", ") : (row["Plant Name"] || "—");
   });
