@@ -202,6 +202,16 @@ function parseExpiryDate(d) {
   return isNaN(p.getTime()) ? null : p;
 }
 
+// FIX-EXPIRY-DISPLAY: toISOString() converts local-midnight dates to UTC, producing
+// a one-day-earlier date string in UTC+3 (Ethiopia). Use local date parts instead.
+function fmtLocalDate(d) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return "";
+  const y  = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const dy = String(d.getDate()).padStart(2, "0");
+  return `${y}-${mo}-${dy}`;
+}
+
 // ── LOAD & PROCESS EXCEL ───────────────────────────────────────────────────
 function loadFile(file) {
   // FIX PERF-2: warn before parsing very large files
@@ -264,6 +274,9 @@ function loadFile(file) {
 
         // FIX BUG-3: clear stale page filters from the previous file
         resetPageFilters();
+        // FIX-STFILTER: also reset transit-section filter state on new main file load
+        // so stale PO/supplying-plant selections from the previous dataset don't persist
+        stFilterState = { purDoc: "", supPlant: "" };
 
         showSuccess(file.name, df.length);
         clearError();
@@ -342,7 +355,12 @@ function buildMultiSelect(wrapId, ddId, items, placeholder) {
   renderItems("");
 
   // Toggle open/close
-  btn.addEventListener("click", e => {
+  // FIX-LISTENER: clone btn to strip any previously registered click listeners from
+  // prior buildMultiSelect calls (e.g. when renderBranch rebuilds ms-branch-select).
+  const freshBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(freshBtn, btn);
+  const activeBtn = freshBtn; // use this reference from here on
+  freshBtn.addEventListener("click", e => {
     e.stopPropagation();
     // Close all others first
     document.querySelectorAll(".ms-wrap.open").forEach(w => { if (w !== wrap) w.classList.remove("open"); });
@@ -526,11 +544,15 @@ function downloadCSV(data, cols, filename) {
   const rows   = data.map(row => cols.map(c => {
     let v = c.rawKey ? (row[c.rawKey] ?? row[c.key] ?? "") : (row[c.key] ?? "");
     v = String(v ?? "");
-    // CSV injection guard — prefix dangerous leading chars
-    if (/^[=+\-@\t\r]/.test(v)) v = `'${v}`;
-    // FIX BUG-9: also quote cells that contain tab characters
-    if (v.includes(",") || v.includes('"') || v.includes("\n") || v.includes("\t")) {
+    // FIX-CSV-ORDER: quote first (handles commas/tabs/newlines/quotes), THEN
+    // apply injection guard — but only on non-quoted values so the ' prefix stays
+    // as the literal first character seen by spreadsheet apps.
+    const needsQuote = v.includes(",") || v.includes('"') || v.includes("\n") || v.includes("\t");
+    if (needsQuote) {
       v = `"${v.replace(/"/g, '""')}"`;
+    } else if (/^[=+\-@\r]/.test(v)) {
+      // Injection guard only for non-quoted values (\t already handled above via quoting)
+      v = `'${v}`;
     }
     return v;
   }).join(","));
@@ -799,7 +821,7 @@ function getTransitInfo(material, plantCode) {
 // Holds the full transit rows (pre-built) so the search filter can re-slice them.
 let _transitRowsCache = [];
 let _transitColsCache = [];
-let _ho01RowsCache    = [];
+// _ho01RowsCache removed — was declared but never populated or read (dead code)
 
 function renderTransit() {
   // rawDf is pre-filtered at parse time — no need to re-apply isNonMedical* guards here.
@@ -957,7 +979,7 @@ function renderExpiry() {
       const drillRows = sortBy(
         monthItems.map(r => ({
           ...r,
-          _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : "",
+          _expiryStr: r._expiry ? fmtLocalDate(r._expiry) : "",
           _daysLeft:  r._expiry ? Math.floor((r._expiry - new Date()) / 86400000) : 9999,
         })),
         "_daysLeft", true
@@ -992,7 +1014,7 @@ function renderExpiry() {
       ? ` <span style="font-size:0.72rem;color:var(--muted);font-weight:400">(${expiredZeroQty} zero-qty records hidden)</span>`
       : "";
     document.getElementById("expired-header").innerHTML = `🔴 Already Expired Items (${expiredWithStock.length})${zeroNote}`;
-    const expiredRows = expiredWithStock.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
+    const expiredRows = expiredWithStock.map(r => ({...r, _expiryStr: r._expiry ? fmtLocalDate(r._expiry) : ""}));
     document.getElementById("expired-table-wrap").innerHTML = buildTable(expiredRows, [
       {key:"Material", label:"Material Code", fmt:(val,r)=>renderMatCode(val,r), raw:true, cellClass:"col-mat-code-wrap"},
       {key:"Material Description", label:"Material Description", fmt:(val,r)=>renderMatDesc(val,r), raw:true, cellClass:"col-mat-desc-wrap"},
@@ -1047,7 +1069,7 @@ function renderExpirySearch() {
   }
 
   const annotated = matches.map(r => {
-    const expiryStr = r._expiry ? r._expiry.toISOString().slice(0,10) : "—";
+    const expiryStr = r._expiry ? fmtLocalDate(r._expiry) : "—";
     let daysLeft = null, statusLabel = "No Expiry Date", statusClass = "";
     if (r._expiry instanceof Date && !isNaN(r._expiry)) {
       daysLeft = Math.floor((r._expiry - today) / 86400000);
@@ -1129,7 +1151,7 @@ function renderQCSearch() {
 
   const today = new Date();
   const annotated = matches.map(r => {
-    const expiryStr = r._expiry ? r._expiry.toISOString().slice(0,10) : "—";
+    const expiryStr = r._expiry ? fmtLocalDate(r._expiry) : "—";
     let daysLeft = null, statusLabel = "No Expiry Date", statusClass = "";
     if (r._expiry instanceof Date && !isNaN(r._expiry)) {
       daysLeft = Math.floor((r._expiry - today) / 86400000);
@@ -1251,7 +1273,7 @@ function renderQC() {
   const qcRows = sortBy(
     [...df].map(r => ({
       ...r,
-      _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : "",
+      _expiryStr: r._expiry ? fmtLocalDate(r._expiry) : "",
     })),
     "Value of Stock in Quality Inspection"
   );
@@ -1551,7 +1573,9 @@ function renderBranch() {
     }
   }
 
-  document.getElementById("branch-select-apply")?.addEventListener("click", updateBranchCharts);
+  // FIX-LISTENER: use onclick (not addEventListener) so re-renders don't stack listeners
+  const branchApplyBtn = document.getElementById("branch-select-apply");
+  if (branchApplyBtn) branchApplyBtn.onclick = updateBranchCharts;
   updateBranchCharts();
 }
 
@@ -1730,8 +1754,8 @@ function renderPreviewTable() {
 
   // FIX BUG-1: display rows are sliced to 500 for the table, but download rows
   // use the FULL filtered dataset so the export is never silently truncated.
-  const displayRows  = df.slice(0, 500).map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
-  const downloadRows = df.map(r => ({...r, _expiryStr: r._expiry ? r._expiry.toISOString().slice(0,10) : ""}));
+  const displayRows  = df.slice(0, 500).map(r => ({...r, _expiryStr: r._expiry ? fmtLocalDate(r._expiry) : ""}));
+  const downloadRows = df.map(r => ({...r, _expiryStr: r._expiry ? fmtLocalDate(r._expiry) : ""}));
 
   document.getElementById("preview-table-wrap").innerHTML =
     buildTable(displayRows, cols) +
@@ -1913,7 +1937,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // File upload
   document.getElementById("fileInput").addEventListener("change", e => {
-    const f = e.target.files[0]; if (f) loadFile(f);
+    const f = e.target.files[0];
+    if (f) loadFile(f);
+    // FIX-FILE-RESET: reset value so the same file can be re-uploaded (e.g. after editing)
+    e.target.value = "";
   });
 
   // Stock in Transit file upload
