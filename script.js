@@ -278,6 +278,9 @@ function loadFile(file) {
         // so stale PO/supplying-plant selections from the previous dataset don't persist
         stFilterState = { purDoc: "", supPlant: "" };
 
+        // If transit file was already loaded, stamp phantom flags on the new dataset
+        if (stockTransitRaw.length) recomputePhantomTransit();
+
         showSuccess(file.name, df.length);
         clearError();
         hideLanding();
@@ -579,6 +582,8 @@ function pl(extra={}) {
 function renderDashboard() {
   const df = applyPageFilter("dashboard");
 
+  renderPhantomAlert("dash-phantom-alert", df);
+
   const totalVal   = df.reduce((s,r) => s + r["Total Value"], 0);
   const transitVal = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
   const qcVal      = df.reduce((s,r) => s + r["Value of Stock in Quality Inspection"], 0);
@@ -714,12 +719,17 @@ function loadTransitFile(file) {
         stockTransitRaw = df;
         stFilterState   = { purDoc: "", supPlant: "" };
 
+        // Recompute phantom flags now that transit detail is available
+        recomputePhantomTransit();
+
         // Update status
         statusEl.innerHTML = `<div class="status-ok">✓ TRANSIT FILE LOADED</div><div class="status-name">${escHtml(file.name)} (${df.length.toLocaleString()} records)</div>`;
         document.getElementById("transitUploadBtnText").textContent = "📦 Change Transit File";
 
-        // If currently on transit page, re-render to show the new section
-        if (currentPage === "transit") renderStockTransitSection();
+        // Re-render current page so phantom exclusions take effect immediately
+        const reRender = { dashboard: renderDashboard, transit: () => { renderTransit(); renderStockTransitSection(); }, branch: renderBranch, flow: renderFlow };
+        if (reRender[currentPage]) reRender[currentPage]();
+        else if (currentPage === "transit") renderStockTransitSection();
       } catch (err) {
         statusEl.innerHTML = `<div class="status-ok" style="color:var(--red)">✗ ${escHtml(err.message)}</div>`;
       }
@@ -814,6 +824,91 @@ function getTransitInfo(material, plantCode) {
   };
 }
 
+// ─── Phantom Transit Detection ────────────────────────────────────────────
+// A transit row is "phantom" (not physically available / unverifiable) when:
+//   • The main data has Stock in Transit > 0, AND
+//   • The transit detail file is loaded, AND
+//   • No matching row in the transit detail has BOTH a Purchasing Document
+//     AND a Supplying Plant for that material+plant combo.
+//
+// Phantom rows are EXCLUDED from all aggregate values (Total Value, Total Qty,
+// Value of Stock in Transit, Stock in Transit) on Dashboard, Branch Comparison,
+// and Inventory Flow. They are flagged with a warning badge on the Transit page.
+
+function isPhantomTransit(row) {
+  // If no transit file is loaded, we cannot judge — treat as valid
+  if (!stockTransitRaw.length) return false;
+  // Only relevant for rows that actually have transit stock
+  if (!(row["Stock in Transit"] > 0)) return false;
+
+  const mat = String(row["Material"] || "").trim();
+  const plt = String(row["Plant"]    || "").trim().toUpperCase();
+  const hits = stockTransitRaw.filter(r =>
+    r._st_material === mat &&
+    (plt === "" || r._st_plant.toUpperCase() === plt)
+  );
+  // No matching entry at all → phantom
+  if (!hits.length) return true;
+  // Has at least one row with BOTH purchasing doc AND supplying plant → valid
+  const hasFullDoc = hits.some(r => r._st_purDoc && r._st_supPlant);
+  return !hasFullDoc;
+}
+
+// Called after transit file loads OR after main file loads (when transit already exists).
+// Stamps each rawDf row with _phantomTransitQty / _phantomTransitVal and
+// recomputes Total Value / Total Qty to exclude phantom transit amounts.
+function recomputePhantomTransit() {
+  rawDf.forEach(row => {
+    if (isPhantomTransit(row)) {
+      row._phantomTransitQty = row["Stock in Transit"];
+      row._phantomTransitVal = row["Value of Stock in Transit"];
+    } else {
+      row._phantomTransitQty = 0;
+      row._phantomTransitVal = 0;
+    }
+    // Recompute derived totals excluding phantom transit
+    row["Total Value"] = row["Value of Unrestricted Stock"]
+                       + (row["Value of Stock in Transit"] - row._phantomTransitVal)
+                       + row["Value of Stock in Quality Inspection"];
+    row["Total Qty"]   = row["Unrestricted Stock"]
+                       + (row["Stock in Transit"] - row._phantomTransitQty)
+                       + row["Stock in Quality Inspection"];
+  });
+}
+
+// Returns an object { count, qty, val } for phantom transit rows in a given df slice
+function getPhantomSummary(df) {
+  const rows = df.filter(r => r._phantomTransitQty > 0);
+  return {
+    count: rows.length,
+    qty:   rows.reduce((s,r) => s + r._phantomTransitQty, 0),
+    val:   rows.reduce((s,r) => s + r._phantomTransitVal, 0),
+  };
+}
+
+// Renders a dismissible alert banner into the element with given id.
+// Does nothing (clears el) if there are no phantom rows.
+function renderPhantomAlert(containerId, df) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const { count, qty, val } = getPhantomSummary(df);
+  if (!count || !stockTransitRaw.length) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = `
+    <div class="phantom-transit-alert">
+      <span class="phantom-alert-icon">⚠️</span>
+      <div class="phantom-alert-body">
+        <strong>Unverified Transit Stock Excluded</strong>
+        <span>${count.toLocaleString()} item${count!==1?"s":""} (${fmtQty(qty)} units · ${fmtETB(val)}) have <em>Stock in Transit</em> but
+        lack a <em>Purchasing Document</em> and <em>Supplying Plant</em> in the transit detail file.
+        These items are <strong>not physically confirmed</strong> and have been excluded from all quantities and values shown here.</span>
+        <a class="phantom-alert-link" onclick="navigateTo('transit')">View on Transit page →</a>
+      </div>
+    </div>`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TRANSIT
 // ═══════════════════════════════════════════════════════════════════════════
@@ -834,10 +929,19 @@ function renderTransit() {
   const totalTV = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
   const totalTQ = df.reduce((s,r) => s + r["Stock in Transit"], 0);
   const uniqMat = new Set(df.map(r => r["Material"])).size;
+
+  // Phantom transit summary for transit KPIs
+  const phantomRows = df.filter(r => r._phantomTransitQty > 0);
+  const phantomCount = phantomRows.length;
+  const phantomKpiExtra = phantomCount > 0 && stockTransitRaw.length
+    ? [[`Unverified Transit Items`, String(phantomCount), "No PO & Supplying Plant — excluded from totals", "red"]]
+    : [];
+
   setKpis("transit-kpis", [
     ["Total Transit Value",        fmtETB(totalTV), "Across all plants",  "amber"],
     ["Total Transit Quantity",     fmtQty(totalTQ), "Units in movement",  "blue"],
     ["Unique Materials in Transit",String(uniqMat), "Distinct SKUs",      "green"],
+    ...phantomKpiExtra,
   ]);
 
   const transitCols = [
@@ -853,14 +957,17 @@ function renderTransit() {
   ];
   const transitRows = sortBy([...df], "Value of Stock in Transit").map(r => {
     const info = getTransitInfo(r["Material"], r["Plant"]);
+    const isPhantom = r._phantomTransitQty > 0;
     return {
       ...r,
       _purDoc:   info.purDoc,
       _supPlant: info.supPlant,
-      _status: r["Value of Stock in Transit"] > 100000 ? "<span class='badge badge-red'>Critical</span>"
-             : r["Value of Stock in Transit"] > 50000  ? "<span class='badge badge-amber'>High</span>"
-             : r["Value of Stock in Transit"] > 10000  ? "<span class='badge badge-amber'>Medium</span>"
-             : "<span class='badge badge-green'>Low</span>",
+      _status: isPhantom
+        ? "<span class='badge badge-phantom'>⚠ No PO / No Supplying Plant — Not Physically Confirmed</span>"
+        : r["Value of Stock in Transit"] > 100000 ? "<span class='badge badge-red'>Critical</span>"
+        : r["Value of Stock in Transit"] > 50000  ? "<span class='badge badge-amber'>High</span>"
+        : r["Value of Stock in Transit"] > 10000  ? "<span class='badge badge-amber'>Medium</span>"
+        : "<span class='badge badge-green'>Low</span>",
     };
   });
 
@@ -884,7 +991,7 @@ function renderTransit() {
 
   // Show all filtered transit items directly (no search gate)
   document.getElementById("transit-table-wrap").innerHTML = transitRows.length
-    ? buildTable(transitRows, transitCols)
+    ? buildTable(transitRows, transitCols, r => r._phantomTransitQty > 0 ? "row-red" : "")
     : `<div class="alert-info">No pharmaceutical transit items found.</div>`;
 }
 
@@ -896,7 +1003,7 @@ function renderTransitSearch() {
   if (!query) {
     document.getElementById("transit-search-results").innerHTML = "";
     document.getElementById("transit-table-wrap").innerHTML = _transitRowsCache.length
-      ? buildTable(_transitRowsCache, transitCols)
+      ? buildTable(_transitRowsCache, transitCols, r => r._phantomTransitQty > 0 ? "row-red" : "")
       : `<div class="alert-info">No pharmaceutical transit items found.</div>`;
     return;
   }
@@ -914,7 +1021,7 @@ function renderTransitSearch() {
     </div>`;
 
   document.getElementById("transit-table-wrap").innerHTML = filtered.length
-    ? buildTable(filtered, transitCols)
+    ? buildTable(filtered, transitCols, r => r._phantomTransitQty > 0 ? "row-red" : "")
     : `<div class="alert-info">No transit items match "<b>${escHtml(query)}</b>".</div>`;
 }
 
@@ -1292,6 +1399,8 @@ function renderBranch() {
   // aggregateByMaterial is still used for the material tab (Tab 2) display only.
   const baseDf = applyPageFilter("branch");
 
+  renderPhantomAlert("branch-phantom-alert", baseDf);
+
   // Detect central branch from raw (multi-plant) data
   const plants = [...new Set(baseDf.map(r => String(r["Plant"]).toUpperCase()))];
   let centralCode, centralName;
@@ -1606,6 +1715,8 @@ function renderBranch() {
 // ═══════════════════════════════════════════════════════════════════════════
 function renderFlow() {
   const df = applyPageFilter("flow");
+
+  renderPhantomAlert("flow-phantom-alert", df);
 
   const totalVal   = df.reduce((s,r) => s + r["Total Value"], 0);
   const transitVal = df.reduce((s,r) => s + r["Value of Stock in Transit"], 0);
