@@ -10,6 +10,18 @@
 // =============================================================================
 
 /**
+ * Returns true if the material code is a valid pharmaceutical code.
+ * Pharmaceutical SAP material codes start with 1, 2, 3, or 4.
+ * Used internally by isNonMedicalCode and available for external callers.
+ */
+function isMedicalCode(code) {
+  if (!code) return false;
+  const c = String(code).trim();
+  if (!c) return false;
+  return /^[1234]/.test(c);
+}
+
+/**
  * Returns true if the material code looks like a non-medical / non-trade item
  * that should be excluded from pharmaceutical inventory analysis.
  *
@@ -17,31 +29,20 @@
  *   - Codes starting with "NT" (Non-Trade)
  *   - Codes that do NOT start with 1, 2, 3, or 4 (pharmaceutical SAP codes)
  *   - Empty / blank codes
+ *
+ * FIX-R9: now implemented as the negation of isMedicalCode (DRY) with the
+ * additional NT prefix guard, so both functions stay consistent.
  */
 function isNonMedicalCode(code) {
   if (!code) return true;
   const c = String(code).trim().toUpperCase();
   if (!c) return true;
 
-  // Non-Trade prefix
+  // Non-Trade prefix — excluded even though it starts with a letter, not 1-4
   if (c.startsWith("NT")) return true;
 
-  // Only allow pharmaceutical material codes starting with 1, 2, 3, or 4.
-  // All other prefixes (letters, 0, 5-9, etc.) are non-medical.
-  if (!/^[1234]/.test(c)) return true;
-
-  return false;
-}
-
-/**
- * Returns true if the material code is a valid pharmaceutical code.
- * Pharmaceutical SAP material codes start with 1, 2, 3, or 4.
- */
-function isMedicalCode(code) {
-  if (!code) return false;
-  const c = String(code).trim();
-  if (!c) return false;
-  return /^[1234]/.test(c);
+  // Delegate to isMedicalCode for the numeric prefix check
+  return !isMedicalCode(c);
 }
 
 /**
