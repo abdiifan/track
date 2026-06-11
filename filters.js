@@ -88,6 +88,25 @@ function isProjectStockDescription(description) {
 }
 
 /**
+ * Extracts the valuation type suffix from an "Inventory Valuation Type" value.
+ *
+ * SAP stores these as "<code>_<SUFFIX>" e.g. "50833_ZME", "023_ZLC", "EPSS1_ZMS".
+ * We extract everything after the last underscore and return it uppercased.
+ *
+ * Known suffixes in use: ZME, ZLC, ZMS, ZMD.
+ * Returns "(None)" for blank / unrecognised values so the filter dropdown always
+ * has a clean, displayable label for every row.
+ */
+function getValuationType(row) {
+  if (!row) return "(None)";
+  const raw = String(row["Inventory Valuation Type"] || "").trim();
+  if (!raw) return "(None)";
+  const lastUnderscore = raw.lastIndexOf("_");
+  if (lastUnderscore === -1 || lastUnderscore === raw.length - 1) return raw.toUpperCase() || "(None)";
+  return raw.substring(lastUnderscore + 1).toUpperCase();
+}
+
+/**
  * Returns true if the Storage Location code is in the excluded list.
  *
  * These locations hold non-pharmaceutical / project / administrative stock
