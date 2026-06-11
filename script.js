@@ -111,12 +111,12 @@ let stFilterState      = { purDoc: "", supPlant: "" };  // filter state
 // Page-level filter state — now arrays for multi-select support
 // NOTE: "preview" page uses its own <select multiple> UI (filtDf), not pageFilters.
 const pageFilters = {
-  dashboard: { plants: [], mgs: [] },
-  transit:   { plants: [], mgs: [] },
-  expiry:    { plants: [], mgs: [] },
-  qc:        { plants: [], mgs: [] },
-  branch:    { mgs: [] },
-  flow:      { plants: [], mgs: [] },
+  dashboard: { plants: [], mgs: [], valTypes: [] },
+  transit:   { plants: [], mgs: [], valTypes: [] },
+  expiry:    { plants: [], mgs: [], valTypes: [] },
+  qc:        { plants: [], mgs: [], valTypes: [] },
+  branch:    { mgs: [],             valTypes: [] },
+  flow:      { plants: [], mgs: [], valTypes: [] },
 };
 
 // Returns the base dataset. Reconciliation has been removed; returns rawDf directly.
@@ -131,6 +131,7 @@ function resetPageFilters() {
   Object.keys(pageFilters).forEach(page => {
     if ("plants" in pageFilters[page]) pageFilters[page].plants = [];
     pageFilters[page].mgs = [];
+    pageFilters[page].valTypes = [];
   });
 }
 
@@ -455,6 +456,25 @@ function populateAllFilters() {
     buildMultiSelect(cfg.wrapId, cfg.ddId, mgs, "All Material Groups");
   });
 
+  // Valuation Type multi-selects
+  const valTypes = [...new Set(rawDf.map(r => getValuationType(r)))]
+    .filter(v => v && v !== "(None)")
+    .sort();
+
+  const vtConfigs = [
+    { wrapId:"ms-dash-vt",    ddId:"ms-dash-vt-dd",    page:"dashboard" },
+    { wrapId:"ms-transit-vt", ddId:"ms-transit-vt-dd", page:"transit"   },
+    { wrapId:"ms-expiry-vt",  ddId:"ms-expiry-vt-dd",  page:"expiry"    },
+    { wrapId:"ms-qc-vt",      ddId:"ms-qc-vt-dd",      page:"qc"        },
+    { wrapId:"ms-branch-vt",  ddId:"ms-branch-vt-dd",  page:"branch"    },
+    { wrapId:"ms-flow-vt",    ddId:"ms-flow-vt-dd",    page:"flow"      },
+  ];
+  vtConfigs.forEach(cfg => {
+    const wrap = document.getElementById(cfg.wrapId);
+    if (wrap) { wrap.dataset.page = cfg.page; wrap.dataset.key = "valTypes"; }
+    buildMultiSelect(cfg.wrapId, cfg.ddId, valTypes, "All Val. Types");
+  });
+
   // Legacy multi-select for Data Preview (kept as-is)
   const plantSelLegacy  = ["filter-plant"];
   const mgSelLegacy     = ["filter-mg"];
@@ -472,6 +492,15 @@ function populateAllFilters() {
     const el = document.getElementById(id); if (!el) return;
     el.innerHTML = mgs.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
   });
+
+  // Legacy valuation type select for Preview page
+  const vtPreviewSel = document.getElementById("filter-valtype");
+  if (vtPreviewSel) {
+    const vtPreview = [...new Set(rawDf.map(r => getValuationType(r)))]
+      .filter(v => v && v !== "(None)")
+      .sort();
+    vtPreviewSel.innerHTML = vtPreview.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
+  }
 }
 
 // ── APPLY PAGE FILTER ──────────────────────────────────────────────────────
@@ -481,17 +510,19 @@ function populateAllFilters() {
 function applyPageFilter(page) {
   const f    = pageFilters[page] || {};
   const base = getReconciledBase();
-  const plants = f.plants || [];
-  const mgs    = f.mgs    || [];
+  const plants   = f.plants   || [];
+  const mgs      = f.mgs      || [];
+  const valTypes = f.valTypes || [];
   return base.filter(r =>
     // Re-apply base exclusion rules (defence-in-depth)
     !isNonMedicalCode(r["Material"]) &&
     !isNonMedicalGroup(r["Material Group Name"]) &&
     !isProjectStockDescription(r["Special Stock Type Description"]) &&
     !isExcludedStorageLocation(r["Storage Location"]) &&
-    // Page-level plant / material group filters
-    (!plants.length || plants.includes(r["Plant Name"])) &&
-    (!mgs.length    || mgs.includes(r["Material Group Name"]))
+    // Page-level plant / material group / valuation type filters
+    (!plants.length   || plants.includes(r["Plant Name"])) &&
+    (!mgs.length      || mgs.includes(r["Material Group Name"])) &&
+    (!valTypes.length || valTypes.includes(getValuationType(r)))
   );
 }
 
@@ -1898,6 +1929,15 @@ function populatePreviewFilters() {
   fill("filter-plant",  "Plant Name",         null);
   fill("filter-mg",     "Material Group Name", isNonMedicalGroup);
   fill("filter-mgname", "Material Group Name", isNonMedicalGroup);
+
+  // Valuation type: extract unique suffixes from the dataset
+  const vtSel = document.getElementById("filter-valtype");
+  if (vtSel) {
+    const valTypes = [...new Set(rawDf.map(r => getValuationType(r)))]
+      .filter(v => v && v !== "(None)")
+      .sort();
+    vtSel.innerHTML = valTypes.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
+  }
 }
 
 function applyPreviewFilters() {
@@ -1906,10 +1946,12 @@ function applyPreviewFilters() {
   const plants      = getSelected("filter-plant");
   const mgs         = getSelected("filter-mg");
   const mgnames     = getSelected("filter-mgname");
+  const valTypes    = getSelected("filter-valtype");
   filtDf = baseDf.filter(r =>
-    (!plants.length  || plants.includes(r["Plant Name"])) &&
-    (!mgs.length     || mgs.includes(r["Material Group Name"])) &&
-    (!mgnames.length || mgnames.includes(r["Material Group Name"]))
+    (!plants.length    || plants.includes(r["Plant Name"])) &&
+    (!mgs.length       || mgs.includes(r["Material Group Name"])) &&
+    (!mgnames.length   || mgnames.includes(r["Material Group Name"])) &&
+    (!valTypes.length  || valTypes.includes(getValuationType(r)))
   );
   renderPreviewTable();
 }
@@ -2187,7 +2229,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Preview filters
   document.getElementById("btn-apply-filter").addEventListener("click", applyPreviewFilters);
   document.getElementById("btn-clear-filter").addEventListener("click", () => {
-    document.querySelectorAll("#filter-plant option,#filter-mg option,#filter-mgname option").forEach(o => { o.selected = false; });
+    document.querySelectorAll("#filter-plant option,#filter-mg option,#filter-mgname option,#filter-valtype option").forEach(o => { o.selected = false; });
     filtDf = getReconciledBase();
     renderPreviewTable();
   });
@@ -2198,18 +2240,18 @@ document.addEventListener("DOMContentLoaded", () => {
   // Each Apply/Clear button is identified by its stable ID.
 
   const PAGE_FILTER_MAP = {
-    "dash-filter-apply":    { page:"dashboard", plantWrap:"ms-dash-plant",    mgWrap:"ms-dash-mg",    action:"apply" },
-    "dash-filter-clear":    { page:"dashboard", plantWrap:"ms-dash-plant",    mgWrap:"ms-dash-mg",    action:"clear" },
-    "transit-filter-apply": { page:"transit",   plantWrap:"ms-transit-plant", mgWrap:"ms-transit-mg", action:"apply" },
-    "transit-filter-clear": { page:"transit",   plantWrap:"ms-transit-plant", mgWrap:"ms-transit-mg", action:"clear" },
-    "expiry-filter-apply":  { page:"expiry",    plantWrap:"ms-expiry-plant",  mgWrap:"ms-expiry-mg",  action:"apply" },
-    "expiry-filter-clear":  { page:"expiry",    plantWrap:"ms-expiry-plant",  mgWrap:"ms-expiry-mg",  action:"clear" },
-    "qc-filter-apply":      { page:"qc",        plantWrap:"ms-qc-plant",      mgWrap:"ms-qc-mg",      action:"apply" },
-    "qc-filter-clear":      { page:"qc",        plantWrap:"ms-qc-plant",      mgWrap:"ms-qc-mg",      action:"clear" },
-    "branch-filter-apply":  { page:"branch",    plantWrap:null,               mgWrap:"ms-branch-mg",  action:"apply" },
-    "branch-filter-clear":  { page:"branch",    plantWrap:null,               mgWrap:"ms-branch-mg",  action:"clear" },
-    "flow-filter-apply":    { page:"flow",      plantWrap:"ms-flow-plant",    mgWrap:"ms-flow-mg",    action:"apply" },
-    "flow-filter-clear":    { page:"flow",      plantWrap:"ms-flow-plant",    mgWrap:"ms-flow-mg",    action:"clear" },
+    "dash-filter-apply":    { page:"dashboard", plantWrap:"ms-dash-plant",    mgWrap:"ms-dash-mg",    vtWrap:"ms-dash-vt",    action:"apply" },
+    "dash-filter-clear":    { page:"dashboard", plantWrap:"ms-dash-plant",    mgWrap:"ms-dash-mg",    vtWrap:"ms-dash-vt",    action:"clear" },
+    "transit-filter-apply": { page:"transit",   plantWrap:"ms-transit-plant", mgWrap:"ms-transit-mg", vtWrap:"ms-transit-vt", action:"apply" },
+    "transit-filter-clear": { page:"transit",   plantWrap:"ms-transit-plant", mgWrap:"ms-transit-mg", vtWrap:"ms-transit-vt", action:"clear" },
+    "expiry-filter-apply":  { page:"expiry",    plantWrap:"ms-expiry-plant",  mgWrap:"ms-expiry-mg",  vtWrap:"ms-expiry-vt",  action:"apply" },
+    "expiry-filter-clear":  { page:"expiry",    plantWrap:"ms-expiry-plant",  mgWrap:"ms-expiry-mg",  vtWrap:"ms-expiry-vt",  action:"clear" },
+    "qc-filter-apply":      { page:"qc",        plantWrap:"ms-qc-plant",      mgWrap:"ms-qc-mg",      vtWrap:"ms-qc-vt",      action:"apply" },
+    "qc-filter-clear":      { page:"qc",        plantWrap:"ms-qc-plant",      mgWrap:"ms-qc-mg",      vtWrap:"ms-qc-vt",      action:"clear" },
+    "branch-filter-apply":  { page:"branch",    plantWrap:null,               mgWrap:"ms-branch-mg",  vtWrap:"ms-branch-vt",  action:"apply" },
+    "branch-filter-clear":  { page:"branch",    plantWrap:null,               mgWrap:"ms-branch-mg",  vtWrap:"ms-branch-vt",  action:"clear" },
+    "flow-filter-apply":    { page:"flow",      plantWrap:"ms-flow-plant",    mgWrap:"ms-flow-mg",    vtWrap:"ms-flow-vt",    action:"apply" },
+    "flow-filter-clear":    { page:"flow",      plantWrap:"ms-flow-plant",    mgWrap:"ms-flow-mg",    vtWrap:"ms-flow-vt",    action:"clear" },
   };
 
   document.body.addEventListener("click", (e) => {
@@ -2232,6 +2274,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const wrap = document.getElementById(cfg.mgWrap);
         pageFilters[cfg.page].mgs = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
       }
+      if (cfg.vtWrap) {
+        const wrap = document.getElementById(cfg.vtWrap);
+        pageFilters[cfg.page].valTypes = (wrap && wrap._getSelected) ? wrap._getSelected() : [];
+      }
     } else {
       if (cfg.plantWrap) {
         pageFilters[cfg.page].plants = [];
@@ -2241,6 +2287,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (cfg.mgWrap) {
         pageFilters[cfg.page].mgs = [];
         const wrap = document.getElementById(cfg.mgWrap);
+        if (wrap && wrap._clearSelected) wrap._clearSelected();
+      }
+      if (cfg.vtWrap) {
+        pageFilters[cfg.page].valTypes = [];
+        const wrap = document.getElementById(cfg.vtWrap);
         if (wrap && wrap._clearSelected) wrap._clearSelected();
       }
     }
