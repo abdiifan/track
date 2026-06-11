@@ -362,13 +362,10 @@ function buildMultiSelect(wrapId, ddId, items, placeholder) {
     if (checked.length === 0) {
       btn.innerHTML = `${escHtml(placeholder)} <span class="ms-arrow">▾</span>`;
       btn.classList.remove("ms-active");
-    } else if (checked.length <= 2) {
-      const names = checked.map(v => escHtml(v)).join(", ");
-      btn.innerHTML = `<span class="ms-selected-names" title="${escHtml(checked.join(', '))}">${names}</span> <span class="ms-count-badge">${checked.length}</span> <span class="ms-arrow">▾</span>`;
-      btn.classList.add("ms-active");
     } else {
-      const badgeHtml = `<span class="ms-count-badge">${checked.length}</span>`;
-      btn.innerHTML = `${escHtml(placeholder)} ${badgeHtml} <span class="ms-arrow">▾</span>`;
+      const fullLabel = checked.join(", ");
+      const display   = fullLabel.length > 32 ? fullLabel.slice(0, 30) + "…" : fullLabel;
+      btn.innerHTML = `<span class="ms-selected-names" title="${escHtml(fullLabel)}">${escHtml(display)}</span> <span class="ms-count-badge">${checked.length}</span> <span class="ms-arrow">▾</span>`;
       btn.classList.add("ms-active");
     }
   }
@@ -1648,11 +1645,18 @@ function renderBranch() {
       matTabInitialized = true;
       // FIX-BRANCH-MG: use baseDf (not aggregated df) so all material groups are available
       const mgNamesForFilter = [...new Set(baseDf.map(r => r["Material Group Name"]))].filter(Boolean).filter(name => !isNonMedicalGroup(name)).sort();
+      // Build list of all materials for the multi-select
+      const allMatOptions = [...new Set(baseDf.map(r => {
+        const code = String(r["Material"] || "").trim();
+        const desc = String(r["Material Description"] || "").trim();
+        return code + (desc && desc !== code ? " — " + desc : "");
+      }))].filter(Boolean).sort();
+
       wrap.innerHTML = `
         <div style="display:flex;gap:0.8rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.8rem">
           <div>
-            <div class="nav-label" style="font-size:0.65rem;margin-bottom:3px">Search Material</div>
-            <input id="mat-search" type="text" placeholder="code or description…" style="background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:6px 10px;border-radius:6px;width:220px;font-size:13px">
+            <div class="nav-label" style="font-size:0.65rem;margin-bottom:3px">Material</div>
+            <div class="ms-wrap" id="mat-ms-wrap" style="min-width:260px"><button class="ms-btn" type="button">All Materials <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="mat-ms-dd"></div></div>
           </div>
           <div>
             <div class="nav-label" style="font-size:0.65rem;margin-bottom:3px">Metric</div>
@@ -1690,12 +1694,16 @@ function renderBranch() {
         <div id="mat-chart-wrap" style="margin-bottom:1rem"></div>
         <div id="mat-table-wrap"></div>`;
       document.getElementById("mat-apply").addEventListener("click", refreshMaterialView);
-      document.getElementById("mat-search").addEventListener("keydown", e => { if (e.key === "Enter") refreshMaterialView(); });
+      // Build the material multi-select after HTML is in DOM
+      buildMultiSelect("mat-ms-wrap", "mat-ms-dd", allMatOptions, "All Materials");
     }
     refreshMaterialView();
 
     function refreshMaterialView() {
-      const searchVal = (document.getElementById("mat-search").value || "").toLowerCase().trim();
+      const matWrap   = document.getElementById("mat-ms-wrap");
+      const selected  = (matWrap && matWrap._getSelected) ? matWrap._getSelected() : [];
+      // selected values are "CODE — DESC" or just "CODE"; extract the code part before " — "
+      const selCodes  = selected.map(v => v.split(" — ")[0].trim().toLowerCase());
       const metric    = document.getElementById("mat-metric").value;
       const sortMode  = document.getElementById("mat-sort").value;
       const mgFilter  = document.getElementById("mat-mgfilter").value;
@@ -1705,9 +1713,9 @@ function renderBranch() {
       let materials = Object.entries(matPlantMap)
         .filter(([mat, info]) => {
           if (mgFilter && info.group !== mgFilter) return false;
-          if (searchVal) {
-            // Also match by any original source code that maps to this target
-            return mat.toLowerCase().includes(searchVal) || info.desc.toLowerCase().includes(searchVal);
+          if (selCodes.length > 0) {
+            // Multi-select: match if material code is one of the selected codes
+            return selCodes.includes(mat.toLowerCase());
           }
           return true;
         })
