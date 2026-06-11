@@ -185,6 +185,7 @@
     <div class="filter-bar">
       <div class="ms-wrap" id="ms-dash-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-dash-plant-dd"></div></div>
       <div class="ms-wrap" id="ms-dash-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-dash-mg-dd"></div></div>
+      <div class="ms-wrap" id="ms-dash-vt"><button class="ms-btn" type="button">All Val. Types <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-dash-vt-dd"></div></div>
       <button type="button" class="apply-btn small" id="dash-filter-apply">Apply</button>
       <button type="button" class="apply-btn secondary small" id="dash-filter-clear">Clear</button>
     </div>
@@ -221,6 +222,7 @@
     <div class="filter-bar">
       <div class="ms-wrap" id="ms-transit-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-transit-plant-dd"></div></div>
       <div class="ms-wrap" id="ms-transit-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-transit-mg-dd"></div></div>
+      <div class="ms-wrap" id="ms-transit-vt"><button class="ms-btn" type="button">All Val. Types <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-transit-vt-dd"></div></div>
       <button type="button" class="apply-btn small" id="transit-filter-apply">Apply</button>
       <button type="button" class="apply-btn secondary small" id="transit-filter-clear">Clear</button>
     </div>
@@ -281,6 +283,7 @@
       </div>
       <div class="ms-wrap" id="ms-expiry-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-expiry-plant-dd"></div></div>
       <div class="ms-wrap" id="ms-expiry-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-expiry-mg-dd"></div></div>
+      <div class="ms-wrap" id="ms-expiry-vt"><button class="ms-btn" type="button">All Val. Types <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-expiry-vt-dd"></div></div>
       <button type="button" class="apply-btn small" id="expiry-filter-apply">Apply</button>
       <button type="button" class="apply-btn secondary small" id="expiry-filter-clear">Clear</button>
     </div>
@@ -339,6 +342,7 @@
     <div class="filter-bar">
       <div class="ms-wrap" id="ms-qc-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-qc-plant-dd"></div></div>
       <div class="ms-wrap" id="ms-qc-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-qc-mg-dd"></div></div>
+      <div class="ms-wrap" id="ms-qc-vt"><button class="ms-btn" type="button">All Val. Types <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-qc-vt-dd"></div></div>
       <button type="button" class="apply-btn small" id="qc-filter-apply">Apply</button>
       <button type="button" class="apply-btn secondary small" id="qc-filter-clear">Clear</button>
     </div>
@@ -374,6 +378,7 @@
     <div id="branch-central-info" class="alert-info" style="margin-bottom:1rem;display:none"></div>
     <div class="filter-bar">
       <div class="ms-wrap" id="ms-branch-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-branch-mg-dd"></div></div>
+      <div class="ms-wrap" id="ms-branch-vt"><button class="ms-btn" type="button">All Val. Types <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-branch-vt-dd"></div></div>
       <button type="button" class="apply-btn small" id="branch-filter-apply">Apply</button>
       <button type="button" class="apply-btn secondary small" id="branch-filter-clear">Clear</button>
     </div>
@@ -403,6 +408,7 @@
     <div class="filter-bar">
       <div class="ms-wrap" id="ms-flow-plant"><button class="ms-btn" type="button">All Plants <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-flow-plant-dd"></div></div>
       <div class="ms-wrap" id="ms-flow-mg"><button class="ms-btn" type="button">All Material Groups <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-flow-mg-dd"></div></div>
+      <div class="ms-wrap" id="ms-flow-vt"><button class="ms-btn" type="button">All Val. Types <span class="ms-arrow">▾</span></button><div class="ms-dropdown" id="ms-flow-vt-dd"></div></div>
       <button type="button" class="apply-btn small" id="flow-filter-apply">Apply</button>
       <button type="button" class="apply-btn secondary small" id="flow-filter-clear">Clear</button>
     </div>
@@ -453,6 +459,10 @@
       <div class="filter-group">
         <label>Material Group Code</label>
         <select id="filter-mg" multiple size="4"></select>
+      </div>
+      <div class="filter-group">
+        <label>Valuation Type</label>
+        <select id="filter-valtype" multiple size="4"></select>
       </div>
       <button class="apply-btn" id="btn-apply-filter">Apply Filters</button>
       <button class="apply-btn secondary" id="btn-clear-filter">Clear</button>
