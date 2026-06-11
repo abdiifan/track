@@ -335,6 +335,10 @@ function buildMultiSelect(wrapId, ddId, items, placeholder) {
 
   const btn  = wrap.querySelector(".ms-btn");
 
+  // FIX-LABEL: use a mutable reference so updateLabel always targets the live
+  // DOM button even after btn is replaced by freshBtn below.
+  let activeBtn = btn;
+
   // Render options
   function renderItems(filter) {
     const filtered = filter ? items.filter(v => v.toLowerCase().includes(filter.toLowerCase())) : items;
@@ -360,13 +364,13 @@ function buildMultiSelect(wrapId, ddId, items, placeholder) {
   function updateLabel() {
     const checked = [...dd.querySelectorAll("input:checked")].map(c => c.value);
     if (checked.length === 0) {
-      btn.innerHTML = `${escHtml(placeholder)} <span class="ms-arrow">▾</span>`;
-      btn.classList.remove("ms-active");
+      activeBtn.innerHTML = `${escHtml(placeholder)} <span class="ms-arrow">▾</span>`;
+      activeBtn.classList.remove("ms-active");
     } else {
       const fullLabel = checked.join(", ");
       const display   = fullLabel.length > 32 ? fullLabel.slice(0, 30) + "…" : fullLabel;
-      btn.innerHTML = `<span class="ms-selected-names" title="${escHtml(fullLabel)}">${escHtml(display)}</span> <span class="ms-count-badge">${checked.length}</span> <span class="ms-arrow">▾</span>`;
-      btn.classList.add("ms-active");
+      activeBtn.innerHTML = `<span class="ms-selected-names" title="${escHtml(fullLabel)}">${escHtml(display)}</span> <span class="ms-count-badge">${checked.length}</span> <span class="ms-arrow">▾</span>`;
+      activeBtn.classList.add("ms-active");
     }
   }
 
@@ -385,7 +389,9 @@ function buildMultiSelect(wrapId, ddId, items, placeholder) {
   // prior buildMultiSelect calls (e.g. when renderBranch rebuilds ms-branch-select).
   const freshBtn = btn.cloneNode(true);
   btn.parentNode.replaceChild(freshBtn, btn);
-  const activeBtn = freshBtn; // use this reference from here on
+  // FIX-LABEL: update activeBtn to point at the now-live freshBtn so updateLabel
+  // writes to the correct element (the old btn is detached from the DOM after replaceChild).
+  activeBtn = freshBtn;
   freshBtn.addEventListener("click", e => {
     e.stopPropagation();
     // Close all others first
