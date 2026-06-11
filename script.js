@@ -269,11 +269,12 @@ function loadFile(file) {
         if (missing.length) { showError(`Missing columns: ${missing.join(", ")}`); return; }
 
         let df = trimmed
-          .filter(r => String(r["Special Stock Type"]).trim() !== "Q")
+          .filter(r => { const s = String(r["Special Stock Type"]).trim().toUpperCase(); return s !== "Q" && s !== "W"; })
           .filter(r => !isProjectStockDescription(r["Special Stock Type Description"]))
           .filter(r => !isNonMedicalCode(r["Material"]))
           .filter(r => !isNonMedicalGroup(r["Material Group Name"]))
-          .filter(r => !isExcludedStorageLocation(r["Storage Location"]));
+          .filter(r => !isExcludedStorageLocation(r["Storage Location"]))
+          .filter(r => String(r["Inventory Valuation Type"] || "").trim() !== "");
 
         const numCols = [
           "Unrestricted Stock","Stock in Quality Inspection","Blocked Stock","Stock in Transit",
@@ -519,6 +520,8 @@ function applyPageFilter(page) {
     !isNonMedicalGroup(r["Material Group Name"]) &&
     !isProjectStockDescription(r["Special Stock Type Description"]) &&
     !isExcludedStorageLocation(r["Storage Location"]) &&
+    (function(){ const s = String(r["Special Stock Type"] || "").trim().toUpperCase(); return s !== "Q" && s !== "W"; })() &&
+    String(r["Inventory Valuation Type"] || "").trim() !== "" &&
     // Page-level plant / material group / valuation type filters
     (!plants.length   || plants.includes(r["Plant Name"])) &&
     (!mgs.length      || mgs.includes(r["Material Group Name"])) &&
